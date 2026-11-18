@@ -22,6 +22,12 @@ Remnawave and other panel subscriptions, provider JSON configs kept intact,<br>O
 
 [Features](#features) &nbsp;·&nbsp; [Design](#design) &nbsp;·&nbsp; [Install](#install) &nbsp;·&nbsp; [Build](#building-from-source) &nbsp;·&nbsp; [Privacy](#privacy) &nbsp;·&nbsp; [Русский](README.md)
 
+<br>
+
+<img src="docs/screenshots/avaca.png" width="270" alt="The Avaca design">
+&nbsp;&nbsp;&nbsp;
+<img src="docs/screenshots/git.png" width="270" alt="The Git design">
+
 </div>
 
 ## Features

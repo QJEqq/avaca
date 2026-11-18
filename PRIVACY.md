@@ -23,7 +23,7 @@ Avaca — VPN-клиент с открытым исходным кодом. У �
 
 | Куда | Зачем | Что уходит |
 | --- | --- | --- |
-| Серверы подписок, которые вы добавили | Получить список серверов | User-Agent с версией приложения и Android. Для подписок по HTTPS — случайный идентификатор установки (`x-hwid`), название и версия ОС, модель устройства (`x-device-os`, `x-ver-os`, `x-device-model`): по ним панели вроде Remnawave считают устройства. Ничего из этого не уходит никуда, кроме сервера подписки. |
+| Серверы подписок, которые вы добавили | Получить список серверов | User-Agent с версией приложения, версией Android и моделью устройства. Для подписок по HTTPS — случайный идентификатор установки (`x-hwid`), название и версия ОС, модель устройства (`x-device-os`, `x-ver-os`, `x-device-model`): по ним панели вроде Remnawave считают устройства. Ничего из этого не уходит никуда, кроме сервера подписки. |
 | VPN-серверы, которые вы выбрали | Само VPN-соединение | Ваш трафик, зашифрованный протоколом сервера. |
 | DNS-резолверы из настроек (по умолчанию Cloudflare `1.1.1.1` по DoH и `8.8.8.8`) | Разрешение имён | Имена сайтов, которые открывают приложения. |
 | GitHub (релизы v2fly/geoip и v2fly/domain-list-community) | Скачать базы маршрутизации | Обычный запрос на скачивание файла. |
@@ -83,7 +83,7 @@ Uninstalling the app removes all of it.
 
 | Where | Why | What is sent |
 | --- | --- | --- |
-| Subscription servers you added | Fetch the server list | A User-Agent with the app and Android versions. For HTTPS subscriptions: a random per-install identifier (`x-hwid`), the OS name and version, the device model (`x-device-os`, `x-ver-os`, `x-device-model`), which panels such as Remnawave use to count devices. None of it goes anywhere but the subscription server. |
+| Subscription servers you added | Fetch the server list | A User-Agent with the app version, the Android version and the device model. For HTTPS subscriptions: a random per-install identifier (`x-hwid`), the OS name and version, the device model (`x-device-os`, `x-ver-os`, `x-device-model`), which panels such as Remnawave use to count devices. None of it goes anywhere but the subscription server. |
 | VPN servers you chose | The VPN connection itself | Your traffic, encrypted by the server's protocol. |
 | DNS resolvers from settings (default Cloudflare `1.1.1.1` over DoH and `8.8.8.8`) | Name resolution | The names of sites your apps open. |
 | GitHub (v2fly/geoip and v2fly/domain-list-community releases) | Download routing databases | A plain file download. |

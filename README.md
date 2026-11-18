@@ -22,6 +22,12 @@
 
 [Возможности](#возможности) &nbsp;·&nbsp; [Дизайн](#дизайн) &nbsp;·&nbsp; [Установка](#установка) &nbsp;·&nbsp; [Сборка](#сборка-из-исходников) &nbsp;·&nbsp; [Приватность](#приватность) &nbsp;·&nbsp; [English](README.en.md)
 
+<br>
+
+<img src="docs/screenshots/avaca.png" width="270" alt="Дизайн Avaca">
+&nbsp;&nbsp;&nbsp;
+<img src="docs/screenshots/git.png" width="270" alt="Дизайн Git">
+
 </div>
 
 ## Возможности
