@@ -26,6 +26,14 @@ data class ProxyNode(
      * the fields above are then its first member's. See [NodeGroup].
      */
     val group: NodeGroup? = null,
+    /** The server as its operator wrote it in an Xray document; see [OperatorConfig]. */
+    val operator: OperatorConfig? = null,
+    /**
+     * The link's `fm`: Xray's `finalmask` for this server — TCP fragmentation, UDP obfuscation,
+     * QUIC parameters — as the JSON object the core reads under `streamSettings.finalmask`.
+     * Kept whole for the same reason as XHTTP's `extra`: it is what the server was set up with.
+     */
+    val finalMask: String? = null,
 ) {
     val protocol: Protocol get() = settings.protocol
 
@@ -36,6 +44,9 @@ data class ProxyNode(
         get() = buildList {
             // First, because it changes what every other badge describes: only the first member.
             group?.let { add("Auto ×${it.members.size}") }
+            // Said where the list is read, as Happ does: this server runs on the operator's own
+            // settings rather than on what a share link could carry.
+            if (operator != null) add("JSON")
             (settings as? ProxySettings.Raw)?.declaredType
                 ?.takeIf { it.isNotEmpty() }
                 ?.let { add(it) }
@@ -171,3 +182,35 @@ data class LatencyResult(
         const val TIMEOUT_MILLIS = 5_000
     }
 }
+
+/**
+ * A server exactly as its operator wrote it, when it came from an Xray JSON document.
+ *
+ * The typed fields of [ProxyNode] are what this app shows, sorts, pings and diagnoses by; they are
+ * a reading of the server, not the server. What the core is handed for a node carrying this is the
+ * operator's outbound itself — every transport and TLS setting the panel put there, including the
+ * ones this app has never heard of — which is what Happ does with the same document, and why the
+ * same server worked there and not here.
+ *
+ * Kept as JSON text so that nothing in between can drop a field it does not know.
+ */
+@Serializable
+data class OperatorConfig(
+    /** The outbound, verbatim. */
+    val outbound: String,
+    /**
+     * The outbounds it is dialled through, verbatim: whatever its `sockopt.dialerProxy` or
+     * `proxySettings.tag` names, and on down the chain. Usually a `freedom` hop that fragments.
+     */
+    val chain: List<String> = emptyList(),
+    /** The document's `routing`, when it had one. Applied only while this server is selected. */
+    val routing: String? = null,
+    /** The document's `dns`, likewise. */
+    val dns: String? = null,
+    /**
+     * What each tag in the document stands for — `proxy`, `direct`, `block`, `dns`, or `inbound`
+     * for the operator's own inbounds — so that its rules can be pointed at this app's outbounds,
+     * which are named differently.
+     */
+    val roles: Map<String, String> = emptyMap(),
+)

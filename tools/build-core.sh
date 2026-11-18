@@ -1,94 +1,75 @@
 #!/usr/bin/env bash
 #
-# Builds the Xray core into shared/libs/libyumi.aar, which both products use.
+# Builds the Avaca core into shared/libs/avacacore.aar: the Xray core (core-xray/, Go package
+# "yumi", inherited from Yumi) and the OpenFlux transport (third_party/OpenFlux/mobile, package
+# "mobile") bound together by core/ into ONE gomobile .aar. One bind gives one Go runtime
+# (libgojni.so) exporting both APIs; two separate .aars would ship two runtimes at the same path
+# and the APK would not package.
 #
-# Xray, unlike sing-box, ships no mobile binding of its own — there is no `build_libbox` to run and
-# no published .aar to depend on. So `core-xray/` is our own gomobile module, and this script is the
-# only supported way to turn it into something Gradle can consume.
+#   tools/build-core.sh          # arm64-v8a only: every modern phone, half the wait
+#   tools/build-core.sh both     # arm64-v8a + armeabi-v7a: what a release ships
+#   tools/build-core.sh arm      # armeabi-v7a only
 #
-#   tools/build-core.sh              # both ABIs, into shared/libs/libyumi.aar
-#   tools/build-core.sh arm64        # just arm64-v8a, which is every modern phone and half the wait
+# Needs:
+#   - Go matching core/go.mod (`go` line); GOTOOLCHAIN=local below keeps Go from swapping SDKs;
+#   - gomobile and gobind at the version core/go.mod pins:
+#         (cd core && go install golang.org/x/mobile/cmd/gomobile golang.org/x/mobile/cmd/gobind)
+#   - the Android SDK with an NDK (ANDROID_HOME, ANDROID_NDK_HOME), and a JDK 17+;
+#   - the OpenFlux sources: git submodule update --init
 #
-# Four pins below are load-bearing. Each one cost an afternoon to find, so none of them are
-# preferences and none should be "cleaned up":
-#
-#   1. Go 1.26. Xray's go.mod names it and will not build on 1.25. sing-box's go.mod names 1.25.5
-#      and will not link on anything newer — its //go:linkname reach into x/net/http2 is rejected
-#      and the .so dies with "recompile with -fPIC". Both toolchains therefore live side by side
-#      under .tools/toolchain, and `GO_TOOLCHAIN` picks one. Neither can be "the" version.
-#
-#   2. GOTOOLCHAIN=local. Without it, `auto` is free to fetch and switch to another SDK behind the
-#      pin, which quietly undoes point 1. `auto` also only ever upgrades, so a go.mod asking for
-#      less than what is on PATH is considered satisfied and ignored.
-#
-#   3. The upstream gomobile, not the one on PATH. `.tools/toolchain/gopath/bin/gomobile` is
-#      SagerNet's fork, which sing-box needs and which expects `github.com/sagernet/gomobile/bind`
-#      to be a dependency of the module being bound. Point it at this module and it fails with
-#      "no Go package in github.com/sagernet/gomobile/bind". The two cannot share a bin directory,
-#      so the upstream pair lives in its own.
-#
-#   4. -ldflags=-checklinkname=0. github.com/wlynxg/anet — pulled in transitively, and the reason
-#      Xray can enumerate interfaces at all on Android 11+ — reaches into net.zoneCache with
-#      //go:linkname. Go 1.23 started refusing that. Everything compiles and the link fails with
-#      "link: github.com/wlynxg/anet: invalid reference to net.zoneCache".
-#
+# Flags:
+#   -androidapi 26     the app's minSdk
+#   -checklinkname=0   github.com/wlynxg/anet reaches into net.zoneCache via //go:linkname,
+#                      which Go 1.23+ rejects without it
+#   -javapkg           Java prefix of the bindings: com.mydrop.vpn.xray.yumi.* (Xray) and
+#                      com.mydrop.vpn.xray.mobile.* (OpenFlux), which the app imports
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MODULE="$REPO/core-xray"
-OUT="$REPO/shared/libs/libyumi.aar"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OUT="${OUT:-$ROOT/shared/libs/avacacore.aar}"
 
-# Matches the app's minSdk. gomobile defaults to something older, and the mismatch surfaces at
-# install time on a real phone rather than here.
-ANDROID_API=26
-
-# The Java package the generated classes land in. Changing it is a source change in the app, not a
-# flag, so it is spelled out here rather than left to gomobile's guess from the module path.
-JAVAPKG=com.mydrop.vpn.xray
-
-case "${1:-both}" in
-    arm64)  TARGETS="android/arm64" ;;
-    arm)    TARGETS="android/arm" ;;
-    both|"") TARGETS="android/arm64,android/arm" ;;
-    *)      echo "usage: $(basename "$0") [arm64|arm|both]" >&2; exit 2 ;;
+case "${1:-arm64}" in
+    arm64) TARGETS="android/arm64" ;;
+    arm)   TARGETS="android/arm" ;;
+    both)  TARGETS="android/arm64,android/arm" ;;
+    *) echo "usage: $(basename "$0") [arm64|arm|both]" >&2; exit 2 ;;
 esac
 
-GO_TOOLCHAIN=go1.26
-export GO_TOOLCHAIN
-# shellcheck source=/dev/null
-source /e/Projects/.tools/env.sh
-export GOTOOLCHAIN=local
-
-GOMOBILE_BIN="$TOOLS/toolchain/gomobile-x/bin"
-GOMOBILE_BIN_POSIX="/e/Projects/.tools/toolchain/gomobile-x/bin"
-
-if [ ! -x "$GOMOBILE_BIN_POSIX/gomobile.exe" ]; then
-    echo "==> installing upstream gomobile into its own bin (see note 3)"
-    GOBIN="$GOMOBILE_BIN" go install \
-        golang.org/x/mobile/cmd/gomobile@latest \
-        golang.org/x/mobile/cmd/gobind@latest
+if [ ! -f "$ROOT/third_party/OpenFlux/go.mod" ]; then
+    echo "third_party/OpenFlux is empty: run  git submodule update --init" >&2
+    exit 1
 fi
 
-# Prepended, so the upstream pair wins over SagerNet's for this process only.
-export PATH="$GOMOBILE_BIN_POSIX:$PATH"
-
-echo "==> $(go version)"
-echo "==> targets: $TARGETS"
-echo "==> core:    $(cd "$MODULE" && go list -m -f '{{.Version}}' github.com/xtls/xray-core)"
+# Toolchain defaults for macOS with Android Studio and for Linux; override any in the environment.
+if [ -z "${ANDROID_HOME:-}" ]; then
+    for candidate in "$HOME/Library/Android/sdk" "$HOME/Android/Sdk"; do
+        [ -d "$candidate" ] && ANDROID_HOME="$candidate" && break
+    done
+fi
+: "${ANDROID_HOME:?set ANDROID_HOME to the Android SDK}"
+export ANDROID_HOME
+export ANDROID_SDK_ROOT="$ANDROID_HOME"
+export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$(ls -d "$ANDROID_HOME"/ndk/* 2>/dev/null | sort -V | tail -1)}"
+: "${ANDROID_NDK_HOME:?install an NDK (sdkmanager --install 'ndk;<version>') or set ANDROID_NDK_HOME}"
+STUDIO_JBR="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+if [ -z "${JAVA_HOME:-}" ] && [ -d "$STUDIO_JBR" ]; then export JAVA_HOME="$STUDIO_JBR"; fi
+if [ -n "${JAVA_HOME:-}" ]; then export PATH="$JAVA_HOME/bin:$PATH"; fi
+export PATH="$PATH:$(go env GOPATH)/bin"
+export GOTOOLCHAIN=local
 
 mkdir -p "$(dirname "$OUT")"
-cd "$MODULE"
-
-# Roughly two minutes cold for one ABI, and about twice that for both. Almost all of it is cgo
-# compiling gVisor; a second run with a warm build cache is well under a minute.
+cd "$ROOT/core"
+echo "==> $(go version)"
+echo "==> targets: $TARGETS"
+echo "==> NDK:     $ANDROID_NDK_HOME"
 time gomobile bind \
     -target="$TARGETS" \
-    -androidapi "$ANDROID_API" \
+    -androidapi 26 \
     -ldflags="-checklinkname=0" \
-    -javapkg="$JAVAPKG" \
+    -javapkg=com.mydrop.vpn.xray \
     -o "$OUT" \
-    .
+    github.com/GXUser7/yumi/core-xray openflux-mobile
 
 echo "==> $OUT"
 ls -lh "$OUT" | awk '{print "    " $5}'
-unzip -l "$OUT" | awk '$4 ~ /\.so$/ {printf "    %-34s %6.1f MB\n", $4, $1/1048576}'
+unzip -l "$OUT" | awk '$4 ~ /\.so$/ {printf "    %-30s %6.1f MB\n", $4, $1/1048576}'

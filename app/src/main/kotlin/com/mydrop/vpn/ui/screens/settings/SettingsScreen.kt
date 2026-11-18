@@ -26,6 +26,10 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Translate
+import com.mydrop.vpn.ui.components.Segmented
+import com.mydrop.vpn.core.model.AppDesign
 import com.mydrop.vpn.data.GeoAssetStore
 import com.mydrop.vpn.data.Ipv6Guard
 import com.mydrop.vpn.ui.format.formatBytes
@@ -46,7 +50,6 @@ import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Router
 import androidx.compose.material.icons.rounded.Shield
-import androidx.compose.material.icons.rounded.SignalCellularAlt
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.SystemUpdate
 import androidx.compose.material.icons.rounded.Widgets
@@ -73,6 +76,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.mydrop.vpn.ui.components.SettingsGroup
+import com.mydrop.vpn.ui.components.PillSwitch
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.Box
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -84,13 +96,16 @@ import androidx.compose.ui.unit.dp
 import com.mydrop.vpn.shared.R
 import com.mydrop.vpn.core.model.AppLanguage
 import com.mydrop.vpn.core.model.AppSettings
+import com.mydrop.vpn.core.model.LogLevel
 import com.mydrop.vpn.core.model.DnsProfile
 import com.mydrop.vpn.core.model.PingMode
 import com.mydrop.vpn.core.model.SplitTunnelMode
-import com.mydrop.vpn.core.model.ThemeMode
-import com.mydrop.vpn.core.model.Visualizer
-import com.mydrop.vpn.core.model.UpdateState
+import com.mydrop.vpn.core.model.RoutingMode
 import com.mydrop.vpn.ui.components.ScreenHeader
+import com.mydrop.vpn.ui.theme.AvacaPalette
+import com.mydrop.vpn.ui.components.neumorphic
+import androidx.compose.material.icons.rounded.Security
+import com.mydrop.vpn.ui.components.TonalIconButton
 import com.mydrop.vpn.ui.components.ShapeSpinner
 import com.mydrop.vpn.vpn.TunnelTileService
 
@@ -130,6 +145,12 @@ private fun ValidatedField(
     )
 }
 
+/** Connections per mux connection offered in settings. */
+private val MUX_CONCURRENCY = listOf(4, 8, 16)
+
+/** A number of bytes or milliseconds, or a range of them: "100" or "100-200". */
+private val FRAGMENT_RANGE = Regex("""\d{1,5}(-\d{1,5})?""")
+
 /** Offered cadences. Anything under half an hour re-reads a list that changes daily. */
 private val UPDATE_INTERVALS = listOf(
     30 to R.string.settings_interval_30m,
@@ -149,30 +170,39 @@ fun SettingsScreen(
     onSelectDns: (String?) -> Unit,
     onRemoveDns: (String) -> Unit,
     onUpdate: ((AppSettings) -> AppSettings) -> Unit,
+    onRoutingModeChange: (RoutingMode) -> Unit,
+    onBack: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenSplitTunnel: () -> Unit,
     onOpenFailover: () -> Unit,
-    onOpenMobileNodes: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    onOpenXrayConfig: () -> Unit,
+    onOpenCustomRules: () -> Unit = {},
+    onOpenConnections: () -> Unit = {},
     geoAssets: GeoAssetStore.State,
     onRefreshGeo: () -> Unit,
     ipv6: Ipv6Guard.Status,
-    updates: UpdateState,
-    onCheckUpdate: () -> Unit,
-    onDownloadUpdate: () -> Unit,
-    onInstallUpdate: (Context) -> Unit,
-    onDismissUpdate: () -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(22.dp),
     ) {
         item("header") {
             ScreenHeader(
                 title = stringResource(R.string.settings_title),
                 modifier = Modifier.padding(bottom = 8.dp),
+                actions = {
+                    TonalIconButton(
+                        Icons.AutoMirrored.Rounded.ArrowBack,
+                        stringResource(R.string.action_back),
+                        onBack,
+                    )
+                    // Back sits where every Android app puts it, at the start, not at the end.
+                    Spacer(Modifier.weight(1f))
+                },
             )
         }
 
@@ -182,72 +212,22 @@ fun SettingsScreen(
                 icon = Icons.Rounded.Palette,
             ) {
                 Text(
-                    text = stringResource(R.string.settings_theme),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = stringResource(R.string.settings_design),
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ThemeMode.entries.forEach { mode ->
-                        ChoiceButton(
-                            label = stringResource(mode.labelRes),
-                            checked = settings.themeMode == mode,
-                            onClick = { onUpdate { it.copy(themeMode = mode) } },
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-
+                Segmented(
+                    options = AppDesign.entries.map { stringResource(it.labelRes) },
+                    selected = settings.appDesign.ordinal,
+                    onSelect = { index -> onUpdate { it.copy(appDesign = AppDesign.entries[index], designChosen = true) } },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 12.dp),
+                )
+                AppIconPicker()
                 Text(
-                    text = stringResource(R.string.settings_language),
-                    style = MaterialTheme.typography.labelMedium,
+                    text = stringResource(R.string.settings_app_icon_note),
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AppLanguage.entries.forEach { language ->
-                        // The endonyms stay in their own language in every locale: somebody
-                        // looking for their language recognises "Русский", not "Russian".
-                        ChoiceButton(
-                            label = stringResource(language.labelRes),
-                            checked = settings.language == language,
-                            onClick = { onUpdate { it.copy(language = language) } },
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(12.dp))
-
-                Text(
-                    text = stringResource(R.string.settings_visualizer),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Visualizer.entries.forEach { visualizer ->
-                        ChoiceButton(
-                            label = stringResource(visualizer.labelRes),
-                            checked = settings.visualizer == visualizer,
-                            onClick = { onUpdate { it.copy(visualizer = visualizer) } },
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(4.dp))
-
-                SwitchRow(
-                    title = stringResource(R.string.settings_dynamic_color),
-                    subtitle = stringResource(R.string.settings_dynamic_color_subtitle),
-                    checked = settings.dynamicColor,
-                    onCheckedChange = { onUpdate { s -> s.copy(dynamicColor = it) } },
-                )
-                SwitchRow(
-                    title = stringResource(R.string.settings_amoled),
-                    subtitle = stringResource(R.string.settings_amoled_subtitle),
-                    checked = settings.amoled,
-                    onCheckedChange = { onUpdate { s -> s.copy(amoled = it) } },
+                    modifier = Modifier.padding(bottom = 8.dp),
                 )
             }
         }
@@ -257,6 +237,30 @@ fun SettingsScreen(
                 title = stringResource(R.string.settings_routing),
                 icon = Icons.Rounded.Router,
             ) {
+                // Used to live as chips on the tunnel screen; it is a setting, and the one screen
+                // that is left has no room for it.
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RoutingMode.entries.forEach { mode ->
+                        ChoiceButton(
+                            label = stringResource(mode.labelRes),
+                            checked = settings.routingMode == mode,
+                            onClick = { onRoutingModeChange(mode) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = stringResource(settings.routingMode.descriptionRes),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                SwitchRow(
+                    title = stringResource(R.string.settings_operator_routing),
+                    subtitle = stringResource(R.string.settings_operator_routing_desc),
+                    checked = settings.operatorRouting,
+                    onCheckedChange = { onUpdate { s -> s.copy(operatorRouting = it) } },
+                )
                 SwitchRow(
                     title = stringResource(R.string.settings_bypass_lan),
                     subtitle = stringResource(R.string.settings_bypass_lan_subtitle),
@@ -277,6 +281,16 @@ fun SettingsScreen(
                 )
 
                 NavigationRow(
+                    title = stringResource(R.string.settings_custom_rules),
+                    subtitle = if (settings.customRules.isEmpty) {
+                        stringResource(R.string.settings_custom_rules_empty)
+                    } else {
+                        stringResource(R.string.settings_custom_rules_count, settings.customRules.size)
+                    },
+                    icon = Icons.Rounded.SwapHoriz,
+                    onClick = onOpenCustomRules,
+                )
+                NavigationRow(
                     title = stringResource(R.string.settings_split_tunnel),
                     subtitle = when (settings.splitTunnelMode) {
                         SplitTunnelMode.Off -> stringResource(R.string.settings_split_tunnel_off)
@@ -288,6 +302,222 @@ fun SettingsScreen(
                     icon = Icons.Rounded.Apps,
                     onClick = onOpenSplitTunnel,
                 )
+            }
+        }
+
+        item("censorship") {
+            SettingsSection(
+                title = stringResource(R.string.settings_censorship),
+                icon = Icons.Rounded.Security,
+            ) {
+                SwitchRow(
+                    title = stringResource(R.string.settings_mux),
+                    subtitle = stringResource(R.string.settings_mux_subtitle),
+                    checked = settings.muxEnabled,
+                    onCheckedChange = { onUpdate { s -> s.copy(muxEnabled = it) } },
+                )
+                AnimatedVisibility(visible = settings.muxEnabled) {
+                    Column {
+                        Text(
+                            text = stringResource(R.string.settings_mux_concurrency),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            MUX_CONCURRENCY.forEach { n ->
+                                ChoiceButton(
+                                    label = "$n",
+                                    checked = settings.muxConcurrency == n,
+                                    onClick = { onUpdate { it.copy(muxConcurrency = n) } },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                }
+                SwitchRow(
+                    title = stringResource(R.string.settings_resolve),
+                    subtitle = stringResource(R.string.settings_resolve_subtitle),
+                    checked = settings.resolveServerAddress,
+                    onCheckedChange = { onUpdate { s -> s.copy(resolveServerAddress = it) } },
+                )
+                AnimatedVisibility(visible = settings.resolveServerAddress) {
+                    Column {
+                        ValidatedField(
+                            initial = settings.resolveDohUrl,
+                            label = stringResource(R.string.settings_resolve_url),
+                            hint = stringResource(R.string.settings_resolve_url_hint),
+                            error = stringResource(R.string.settings_resolve_url_error),
+                            isValid = { it.trim().startsWith("https://") && it.trim().length > 10 },
+                            onCommit = { value -> onUpdate { it.copy(resolveDohUrl = value.trim()) } },
+                        )
+                        Spacer(Modifier.height(4.dp))
+                    }
+                }
+                SwitchRow(
+                    title = stringResource(R.string.settings_fragment),
+                    subtitle = stringResource(R.string.settings_fragment_subtitle),
+                    checked = settings.fragmentEnabled,
+                    onCheckedChange = { onUpdate { s -> s.copy(fragmentEnabled = it) } },
+                )
+                AnimatedVisibility(visible = settings.fragmentEnabled) {
+                    Column {
+                        Text(
+                            text = stringResource(R.string.settings_fragment_packets),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ChoiceButton(
+                                label = stringResource(R.string.settings_fragment_tlshello),
+                                checked = settings.fragmentPackets == "tlshello",
+                                onClick = { onUpdate { it.copy(fragmentPackets = "tlshello") } },
+                            )
+                            ChoiceButton(
+                                label = stringResource(R.string.settings_fragment_first),
+                                checked = settings.fragmentPackets == "1-3",
+                                onClick = { onUpdate { it.copy(fragmentPackets = "1-3") } },
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        ValidatedField(
+                            initial = settings.fragmentLength,
+                            label = stringResource(R.string.settings_fragment_length),
+                            hint = stringResource(R.string.settings_range_hint, "100-200"),
+                            error = stringResource(R.string.settings_range_error),
+                            isValid = { FRAGMENT_RANGE.matches(it.trim()) },
+                            onCommit = { value -> onUpdate { it.copy(fragmentLength = value.trim()) } },
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        ValidatedField(
+                            initial = settings.fragmentInterval,
+                            label = stringResource(R.string.settings_fragment_interval),
+                            hint = stringResource(R.string.settings_range_hint, "10-20"),
+                            error = stringResource(R.string.settings_range_error),
+                            isValid = { FRAGMENT_RANGE.matches(it.trim()) },
+                            onCommit = { value -> onUpdate { it.copy(fragmentInterval = value.trim()) } },
+                        )
+                    }
+                }
+            }
+        }
+
+        item("behaviour") {
+            SettingsSection(
+                title = stringResource(R.string.settings_behaviour),
+                icon = Icons.Rounded.Bolt,
+            ) {
+                SwitchRow(
+                    title = stringResource(R.string.settings_boot),
+                    subtitle = stringResource(R.string.settings_boot_subtitle),
+                    checked = settings.autoConnectOnBoot,
+                    onCheckedChange = { onUpdate { s -> s.copy(autoConnectOnBoot = it) } },
+                )
+                SwitchRow(
+                    title = stringResource(R.string.settings_fastest),
+                    subtitle = stringResource(R.string.settings_fastest_subtitle),
+                    checked = settings.autoSelectFastest,
+                    onCheckedChange = { onUpdate { s -> s.copy(autoSelectFastest = it) } },
+                )
+                SwitchRow(
+                    title = stringResource(R.string.settings_auto_update),
+                    subtitle = stringResource(R.string.settings_auto_update_subtitle),
+                    checked = settings.subscriptionAutoUpdate,
+                    onCheckedChange = { onUpdate { s -> s.copy(subscriptionAutoUpdate = it) } },
+                )
+
+                AnimatedVisibility(visible = settings.subscriptionAutoUpdate) {
+                    Column {
+                        Text(
+                            text = stringResource(R.string.settings_interval),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            UPDATE_INTERVALS.forEach { (minutes, labelRes) ->
+                                ToggleButton(
+                                    checked = settings.subscriptionUpdateMinutes == minutes,
+                                    onCheckedChange = {
+                                        onUpdate { s -> s.copy(subscriptionUpdateMinutes = minutes) }
+                                    },
+                                ) {
+                                    Text(
+                                        stringResource(labelRes),
+                                        style = MaterialTheme.typography.labelMedium,
+                                    )
+                                }
+                            }
+                        }
+                        Text(
+                            text = stringResource(R.string.settings_interval_note),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+
+        /*
+         * Своя секция, а не три строки в общем списке.
+         *
+         * Раньше «Уходить с упавшего сервера», «Возвращаться на мой сервер» и «Серверы для подмены»
+         * лежали в «Поведении» вперемешку с автозапуском и обновлением подписок — одинаковыми
+         * строками, ничем не показывая, что две из них подчинены третьей и что все три вообще про
+         * одно и то же. Владелец так и сказал: непонятно, относятся они к замене сервера или нет.
+         *
+         * Поэтому: отдельная карточка со своим заголовком, а подчинённые настройки — во вложенной
+         * поверхности на тон выше. Вложенность здесь несёт смысл, а не украшает: она ровно и
+         * означает «это работает, только пока включён переключатель сверху», и исчезает вместе с
+         * ним.
+         */
+
+        item("failover") {
+            SettingsSection(
+                title = stringResource(R.string.settings_failover_section),
+                icon = Icons.Rounded.SwapHoriz,
+            ) {
+                SwitchRow(
+                    title = stringResource(R.string.settings_failover),
+                    subtitle = stringResource(R.string.settings_failover_subtitle),
+                    checked = settings.autoFailover,
+                    onCheckedChange = { onUpdate { s -> s.copy(autoFailover = it) } },
+                )
+                AnimatedVisibility(visible = settings.autoFailover) {
+                    DependentGroup {
+                        NavigationRow(
+                            title = stringResource(R.string.settings_failover_servers),
+                            subtitle = if (settings.failoverNodeIds.isEmpty()) {
+                                stringResource(R.string.settings_failover_auto)
+                            } else {
+                                stringResource(
+                                    R.string.settings_failover_manual,
+                                    settings.failoverNodeIds.size,
+                                )
+                            },
+                            icon = Icons.Rounded.Dns,
+                            onClick = onOpenFailover,
+                        )
+                        GroupDivider()
+                        GroupDivider()
+                        SwitchRow(
+                            title = stringResource(R.string.settings_return_home),
+                            subtitle = stringResource(R.string.settings_return_home_subtitle),
+                            checked = settings.returnHome,
+                            onCheckedChange = { onUpdate { s -> s.copy(returnHome = it) } },
+                        )
+                    }
+                }
             }
         }
 
@@ -424,195 +654,6 @@ fun SettingsScreen(
             }
         }
 
-        item("behaviour") {
-            SettingsSection(
-                title = stringResource(R.string.settings_behaviour),
-                icon = Icons.Rounded.Bolt,
-            ) {
-                SwitchRow(
-                    title = stringResource(R.string.settings_boot),
-                    subtitle = stringResource(R.string.settings_boot_subtitle),
-                    checked = settings.autoConnectOnBoot,
-                    onCheckedChange = { onUpdate { s -> s.copy(autoConnectOnBoot = it) } },
-                )
-                SwitchRow(
-                    title = stringResource(R.string.settings_fastest),
-                    subtitle = stringResource(R.string.settings_fastest_subtitle),
-                    checked = settings.autoSelectFastest,
-                    onCheckedChange = { onUpdate { s -> s.copy(autoSelectFastest = it) } },
-                )
-                SwitchRow(
-                    title = stringResource(R.string.settings_auto_update),
-                    subtitle = stringResource(R.string.settings_auto_update_subtitle),
-                    checked = settings.subscriptionAutoUpdate,
-                    onCheckedChange = { onUpdate { s -> s.copy(subscriptionAutoUpdate = it) } },
-                )
-
-                AnimatedVisibility(visible = settings.subscriptionAutoUpdate) {
-                    Column {
-                        Text(
-                            text = stringResource(R.string.settings_interval),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            UPDATE_INTERVALS.forEach { (minutes, labelRes) ->
-                                ToggleButton(
-                                    checked = settings.subscriptionUpdateMinutes == minutes,
-                                    onCheckedChange = {
-                                        onUpdate { s -> s.copy(subscriptionUpdateMinutes = minutes) }
-                                    },
-                                ) {
-                                    Text(
-                                        stringResource(labelRes),
-                                        style = MaterialTheme.typography.labelMedium,
-                                    )
-                                }
-                            }
-                        }
-                        Text(
-                            text = stringResource(R.string.settings_interval_note),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(top = 8.dp),
-                        )
-                    }
-                }
-            }
-        }
-
-
-        /*
-         * Своя секция, а не три строки в общем списке.
-         *
-         * Раньше «Уходить с упавшего сервера», «Возвращаться на мой сервер» и «Серверы для подмены»
-         * лежали в «Поведении» вперемешку с автозапуском и обновлением подписок — одинаковыми
-         * строками, ничем не показывая, что две из них подчинены третьей и что все три вообще про
-         * одно и то же. Владелец так и сказал: непонятно, относятся они к замене сервера или нет.
-         *
-         * Поэтому: отдельная карточка со своим заголовком, а подчинённые настройки — во вложенной
-         * поверхности на тон выше. Вложенность здесь несёт смысл, а не украшает: она ровно и
-         * означает «это работает, только пока включён переключатель сверху», и исчезает вместе с
-         * ним.
-         */
-        item("failover") {
-            SettingsSection(
-                title = stringResource(R.string.settings_failover_section),
-                icon = Icons.Rounded.SwapHoriz,
-            ) {
-                SwitchRow(
-                    title = stringResource(R.string.settings_failover),
-                    subtitle = stringResource(R.string.settings_failover_subtitle),
-                    checked = settings.autoFailover,
-                    onCheckedChange = { onUpdate { s -> s.copy(autoFailover = it) } },
-                )
-                AnimatedVisibility(visible = settings.autoFailover) {
-                    DependentGroup {
-                        NavigationRow(
-                            title = stringResource(R.string.settings_failover_servers),
-                            subtitle = if (settings.failoverNodeIds.isEmpty()) {
-                                stringResource(R.string.settings_failover_auto)
-                            } else {
-                                stringResource(
-                                    R.string.settings_failover_manual,
-                                    settings.failoverNodeIds.size,
-                                )
-                            },
-                            icon = Icons.Rounded.Dns,
-                            onClick = onOpenFailover,
-                        )
-                        GroupDivider()
-                        NavigationRow(
-                            title = stringResource(R.string.settings_mobile_nodes),
-                            subtitle = if (settings.mobileNodeIds.isEmpty()) {
-                                stringResource(R.string.settings_mobile_nodes_off)
-                            } else {
-                                stringResource(
-                                    R.string.settings_mobile_nodes_chosen,
-                                    settings.mobileNodeIds.size,
-                                )
-                            },
-                            icon = Icons.Rounded.SignalCellularAlt,
-                            onClick = onOpenMobileNodes,
-                        )
-                        // Only once the list means something: a switch about coming back from a
-                        // network the tunnel never leaves is a switch about nothing.
-                        AnimatedVisibility(visible = settings.mobileNodeIds.isNotEmpty()) {
-                            Column {
-                                SwitchRow(
-                                    title = stringResource(R.string.settings_prefer_ordinary_cellular),
-                                    subtitle = stringResource(
-                                        R.string.settings_prefer_ordinary_cellular_description,
-                                    ),
-                                    checked = settings.preferOrdinaryOnCellular,
-                                    onCheckedChange = {
-                                        onUpdate { s -> s.copy(preferOrdinaryOnCellular = it) }
-                                    },
-                                )
-                                SwitchRow(
-                                    title = stringResource(R.string.settings_restore_wifi),
-                                    subtitle = stringResource(R.string.settings_restore_wifi_subtitle),
-                                    checked = settings.restoreWifiNodeOnWifi,
-                                    onCheckedChange = {
-                                        onUpdate { s -> s.copy(restoreWifiNodeOnWifi = it) }
-                                    },
-                                )
-                            }
-                        }
-                        GroupDivider()
-                        SwitchRow(
-                            title = stringResource(R.string.settings_return_home),
-                            subtitle = stringResource(R.string.settings_return_home_subtitle),
-                            checked = settings.returnHome,
-                            onCheckedChange = { onUpdate { s -> s.copy(returnHome = it) } },
-                        )
-                    }
-                }
-            }
-        }
-
-        item("diagnostics") {
-            SettingsSection(
-                title = stringResource(R.string.settings_diagnostics),
-                icon = Icons.Rounded.Article,
-            ) {
-                NavigationRow(
-                    title = stringResource(R.string.settings_logs),
-                    subtitle = stringResource(R.string.settings_logs_subtitle),
-                    icon = Icons.Rounded.Article,
-                    onClick = onOpenLogs,
-                )
-                QuickTileRow()
-            }
-        }
-
-        /*
-         * Four switches rather than one, because the events differ in how often they arrive and in
-         * what they cost to miss. A replaced server can happen several times on a bad evening; a
-         * hand-picked list emptying itself happens once and quietly disarms something the user set
-         * up. Somebody who has silenced the first still wants the second.
-         */
-        /*
-         * Visible because its absence is not. The databases arrive in the background and the rules
-         * that name them are left out of the configuration when they are missing — so "route by
-         * rules" and "block ads" can both be switched on and quietly doing nothing, with the tunnel
-         * working perfectly and no way to tell from the outside.
-         */
-        item("geo") {
-            SettingsSection(
-                title = stringResource(R.string.settings_geo),
-                icon = Icons.Rounded.Router,
-            ) {
-                GeoRow(state = geoAssets, onRefresh = onRefreshGeo)
-            }
-        }
-
         item("alerts") {
             SettingsSection(
                 title = stringResource(R.string.settings_alerts_section),
@@ -636,59 +677,112 @@ fun SettingsScreen(
                     checked = settings.alertLists,
                     onCheckedChange = { onUpdate { s -> s.copy(alertLists = it) } },
                 )
-                SwitchRow(
-                    title = stringResource(R.string.settings_alert_update),
-                    subtitle = stringResource(R.string.settings_alert_update_subtitle),
-                    checked = settings.alertUpdate,
-                    onCheckedChange = { onUpdate { s -> s.copy(alertUpdate = it) } },
-                )
             }
         }
 
-        item("updates") {
+        item("geo") {
             SettingsSection(
-                title = stringResource(R.string.settings_updates),
-                icon = Icons.Rounded.SystemUpdate,
+                title = stringResource(R.string.settings_geo),
+                icon = Icons.Rounded.Router,
             ) {
-                SwitchRow(
-                    title = stringResource(R.string.settings_update_auto),
-                    subtitle = stringResource(R.string.settings_update_auto_subtitle),
-                    checked = settings.updateAutoCheck,
-                    onCheckedChange = { onUpdate { s -> s.copy(updateAutoCheck = it) } },
-                )
-                Spacer(Modifier.height(8.dp))
-                UpdateRow(
-                    state = updates,
-                    onCheck = onCheckUpdate,
-                    onDownload = onDownloadUpdate,
-                    onInstall = onInstallUpdate,
-                    onDismiss = onDismissUpdate,
-                )
+                GeoRow(state = geoAssets, onRefresh = onRefreshGeo)
             }
         }
 
-        item("version") {
-            val context = LocalContext.current
-            // Read from the package rather than written here: a hand-maintained string on this
-            // line claimed the core was "coming in the next stage" for as long as the core had
-            // been carrying traffic.
-            val version = remember(context) {
-                runCatching {
-                    context.packageManager.getPackageInfo(context.packageName, 0).versionName
-                }.getOrNull()
-                    // The build type appends its own suffix, and "0.3.5-debug" on screen is a
-                    // detail of how the APK was made, not something the reader has any use for.
-                    ?.substringBefore('-')
-                    .orEmpty()
+        item("diagnostics") {
+            SettingsSection(
+                title = stringResource(R.string.settings_diagnostics),
+                icon = Icons.Rounded.Article,
+            ) {
+                NavigationRow(
+                    title = stringResource(R.string.settings_logs),
+                    subtitle = stringResource(R.string.settings_logs_subtitle),
+                    icon = Icons.Rounded.Article,
+                    onClick = onOpenLogs,
+                )
+                QuickTileRow()
+                SwitchRow(
+                    title = stringResource(R.string.settings_developer),
+                    subtitle = stringResource(R.string.settings_developer_subtitle),
+                    checked = settings.developerMode,
+                    onCheckedChange = { onUpdate { s -> s.copy(developerMode = it) } },
+                )
+                AnimatedVisibility(visible = settings.developerMode) {
+                    Column {
+                        NavigationRow(
+                            title = stringResource(R.string.settings_dev_diagnostics),
+                            subtitle = stringResource(R.string.settings_dev_diagnostics_subtitle),
+                            icon = Icons.Rounded.NetworkPing,
+                            onClick = onOpenDiagnostics,
+                        )
+                        NavigationRow(
+                            title = stringResource(R.string.settings_dev_config),
+                            subtitle = stringResource(R.string.settings_dev_config_subtitle),
+                            icon = Icons.Rounded.Article,
+                            onClick = onOpenXrayConfig,
+                        )
+                        NavigationRow(
+                            title = stringResource(R.string.settings_dev_connections),
+                            subtitle = stringResource(R.string.settings_dev_connections_subtitle),
+                            icon = Icons.Rounded.Router,
+                            onClick = onOpenConnections,
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_dev_log_level),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        // The core's own log level: "debug" shows every connection and why it was
+                        // routed where it went — what an operator reads when "connected" carries nothing.
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            LogLevel.entries.forEach { level ->
+                                ChoiceButton(
+                                    label = level.name.lowercase(),
+                                    checked = settings.logLevel == level,
+                                    onClick = { onUpdate { it.copy(logLevel = level) } },
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                }
             }
+        }
 
-            Text(
-                text = if (version.isEmpty()) "Yumi" else "Yumi $version",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            )
+        /*
+         * Four switches rather than one, because the events differ in how often they arrive and in
+         * what they cost to miss. A replaced server can happen several times on a bad evening; a
+         * hand-picked list emptying itself happens once and quietly disarms something the user set
+         * up. Somebody who has silenced the first still wants the second.
+         */
+        /*
+         * Visible because its absence is not. The databases arrive in the background and the rules
+         * that name them are left out of the configuration when they are missing — so "route by
+         * rules" and "block ads" can both be switched on and quietly doing nothing, with the tunnel
+         * working perfectly and no way to tell from the outside.
+         */
+
+        item("language") {
+            // Only the language is left here: Avaca has one theme (see AvacaTheme), so the theme,
+            // palette, wallpaper-colour, AMOLED and visualiser switches had nothing left to change.
+            SettingsSection(
+                title = stringResource(R.string.settings_language),
+                icon = Icons.Rounded.Translate,
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppLanguage.entries.forEach { language ->
+                        // The endonyms stay in their own language in every locale: somebody
+                        // looking for their language recognises "Русский", not "Russian".
+                        ChoiceButton(
+                            label = stringResource(language.labelRes),
+                            checked = settings.language == language,
+                            onClick = { onUpdate { it.copy(language = language) } },
+                        )
+                    }
+                }
+            }
         }
 
         item("tail") { Spacer(Modifier.height(88.dp)) }
@@ -743,35 +837,18 @@ private fun GeoRow(state: GeoAssetStore.State, onRefresh: () -> Unit) {
 @Composable
 private fun SettingsSection(
     title: String,
-    icon: ImageVector,
+    @Suppress("UNUSED_PARAMETER") icon: ImageVector,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    Card(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
+    // iOS / One UI grouping: a quiet caption over a rounded card — no icon, no relief, so a long
+    // settings page reads as a calm list of groups rather than a stack of posters.
+    SettingsGroup(
+        title = title,
+        modifier = Modifier.padding(horizontal = 16.dp),
     ) {
-        Column(Modifier.padding(16.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp),
-                )
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-            content()
-        }
+        Spacer(Modifier.height(4.dp))
+        content()
+        Spacer(Modifier.height(4.dp))
     }
 }
 
@@ -835,15 +912,32 @@ private fun ipv6Subtitle(enabled: Boolean, status: Ipv6Guard.Status): String = w
  */
 @Composable
 private fun RowScope.ChoiceButton(label: String, checked: Boolean, onClick: () -> Unit) {
-    ToggleButton(
-        checked = checked,
-        onCheckedChange = { onClick() },
-        modifier = Modifier.weight(1f),
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
+    // A pill per option: sand when chosen, a dark well when not — the segmented look of the
+    // iOS and One UI pickers, without Material's outlined toggle buttons.
+    val container by animateColorAsState(
+        if (checked) AvacaPalette.Sand else AvacaPalette.Well,
+        tween(200),
+        label = "choice",
+    )
+    val content by animateColorAsState(
+        if (checked) AvacaPalette.Graphite else AvacaPalette.Text,
+        tween(200),
+        label = "choice-text",
+    )
+    Box(
+        modifier = Modifier
+            .weight(1f)
+            .heightIn(min = 38.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(container)
+            .selectable(selected = checked, role = Role.RadioButton, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.labelMedium,
+            style = MaterialTheme.typography.labelLarge,
+            color = content,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -858,22 +952,27 @@ private fun SwitchRow(
     onCheckedChange: (Boolean) -> Unit,
     subtitleColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
 ) {
+    // The whole row is the toggle, as in iOS and One UI; the pill only shows the state.
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .padding(vertical = 8.dp),
+            .heightIn(min = 52.dp)
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+            .padding(vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = subtitleColor,
-            )
+            if (subtitle.isNotBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = subtitleColor,
+                )
+            }
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Spacer(Modifier.width(12.dp))
+        PillSwitch(checked = checked)
     }
 }
 
@@ -923,172 +1022,6 @@ private fun NavigationRow(
  * system's own "add this tile?" dialog, which does not depend on what the shell's editor chooses
  * to show. Below that version the row explains where to look instead of pretending to act.
  */
-/**
- * One button that always does the next thing: check, then download, then install.
- *
- * Deliberately the connect button from the tunnel screen — same pill, same primary colour, same
- * `titleLarge` label that changes with the state while the geometry stays put. That control
- * already teaches the one idea this needs: a single large thing whose wording tells you where you
- * are. Two of them in one app should not look like two different ideas.
- *
- * Shorter than the original 116 dp, because this one lives inside a settings card rather than
- * being the whole point of its screen.
- *
- * Nothing here installs anything. The last press opens Android’s own installer, which asks again.
- */
-@Composable
-private fun UpdateRow(
-    state: UpdateState,
-    onCheck: () -> Unit,
-    onDownload: () -> Unit,
-    onInstall: (Context) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    val context = LocalContext.current
-    val busy = state is UpdateState.Checking || state is UpdateState.Downloading
-
-    Column(Modifier.fillMaxWidth()) {
-        // Whatever the button cannot say in three words goes above it: the version, the notes,
-        // the reason it failed.
-        when (state) {
-            is UpdateState.Available -> {
-                Text(
-                    text = stringResource(R.string.settings_update_available, state.release.version),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                if (state.release.notes.isNotBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = state.release.notes,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 6,
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-
-            is UpdateState.Downloading -> {
-                // Indeterminate when the size is unknown: a bar sitting at zero because there is
-                // nothing to divide by reads as a download that has stalled.
-                if (state.total > 0) {
-                    LinearProgressIndicator(
-                        progress = { (state.downloaded.toFloat() / state.total).coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "${megabytes(state.downloaded)} / ${megabytes(state.total)} MB",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-
-            is UpdateState.Ready -> {
-                Text(
-                    text = stringResource(R.string.settings_update_ready, state.release.version),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(Modifier.height(12.dp))
-            }
-
-            // Nothing above the button for these two. Both are answers rather than situations —
-            // there is no version to read about and nothing to do next — and both used to push the
-            // button down at the exact moment somebody was looking at it. They are announced in
-            // passing instead; see MainViewModel.
-            is UpdateState.Failed, is UpdateState.UpToDate -> Unit
-
-            UpdateState.Idle, UpdateState.Checking -> Unit
-        }
-
-        Button(
-            onClick = {
-                when (state) {
-                    is UpdateState.Available -> onDownload()
-                    is UpdateState.Ready -> onInstall(context)
-                    else -> onCheck()
-                }
-            },
-            enabled = !busy,
-            modifier = Modifier.fillMaxWidth().height(UpdateButtonHeight),
-            // Half the height, so it is a pill rather than a rounded rectangle — the same
-            // relationship the tunnel control keeps when it is offering to connect.
-            shape = RoundedCornerShape(UpdateButtonHeight / 2),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                // A disabled pill that fades to grey reads as broken rather than busy, and busy is
-                // the only reason this is ever disabled.
-                disabledContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                disabledContentColor = MaterialTheme.colorScheme.primary,
-            ),
-            contentPadding = PaddingValues(0.dp),
-        ) {
-            if (busy) {
-                ShapeSpinner(color = MaterialTheme.colorScheme.primary, size = 24.dp)
-            } else {
-                Icon(
-                    imageVector = when (state) {
-                        is UpdateState.Available -> Icons.Rounded.Download
-                        is UpdateState.Ready -> Icons.Rounded.SystemUpdate
-                        is UpdateState.Failed -> Icons.Rounded.ErrorOutline
-                        else -> Icons.Rounded.Refresh
-                    },
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp),
-                )
-            }
-
-            Spacer(Modifier.width(12.dp))
-
-            Text(
-                text = when (state) {
-                    is UpdateState.Available -> if (state.release.sizeBytes > 0) {
-                        stringResource(
-                            R.string.settings_update_download_sized,
-                            megabytes(state.release.sizeBytes),
-                        )
-                    } else {
-                        stringResource(R.string.settings_update_download)
-                    }
-
-                    is UpdateState.Checking -> stringResource(R.string.settings_update_checking)
-                    is UpdateState.Downloading ->
-                        stringResource(R.string.settings_update_downloading, state.release.version)
-
-                    is UpdateState.Ready -> stringResource(R.string.settings_update_install)
-                    is UpdateState.Failed -> stringResource(R.string.settings_update_retry)
-                    else -> stringResource(R.string.settings_update_check)
-                },
-                style = MaterialTheme.typography.titleMedium,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-            )
-        }
-
-        // Only where there is something to put off. "Later" under a check button would be an
-        // instruction to do nothing.
-        if (state is UpdateState.Available) {
-            TextButton(
-                onClick = onDismiss,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(stringResource(R.string.settings_update_later))
-            }
-        }
-    }
-}
-
-/** Two-thirds of the tunnel screen’s control: the same shape, sized for a settings card. */
-private val UpdateButtonHeight = 76.dp
-
-private fun megabytes(bytes: Long): String =
-    ((bytes * 10 / (1024 * 1024)) / 10.0).toString()
-
 /**
  * One resolver in the list: tap to use it, cross to forget it.
  *

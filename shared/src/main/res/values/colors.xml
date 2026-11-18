@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="window_background">#FFF7F2FA</color>
-    <!-- Indigo ground from the Yumi mark; the adaptive background must be opaque. -->
-    <color name="launcher_background">#FF5052B7</color>
+    <!-- Avaca's ground (AvacaPalette.Graphite): the window behind the first frame and the splash. -->
+    <color name="window_background">#FF292929</color>
+    <color name="splash_background">#FF292929</color>
+    <color name="launcher_bg_1">#FF1D1D1E</color>
+    <color name="launcher_bg_2">#FF0E1916</color>
+    <color name="launcher_bg_3">#FF0C1221</color>
+    <color name="launcher_bg_4">#FF1A0E13</color>
+    <color name="launcher_bg_5">#FF141414</color>
+    <color name="launcher_bg_6">#FF130E20</color>
+    <color name="launcher_bg_7">#FF161B15</color>
 </resources>

@@ -5,7 +5,6 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.mydrop.vpn.core.model.UpdateState
 import com.mydrop.vpn.shared.R
 import com.mydrop.vpn.core.model.AddKind
 import com.mydrop.vpn.core.model.AppSettings
@@ -14,12 +13,11 @@ import com.mydrop.vpn.core.model.LatencyResult
 import com.mydrop.vpn.core.model.LogEntry
 import com.mydrop.vpn.core.model.ProxyNode
 import com.mydrop.vpn.core.model.RoutingMode
-import com.mydrop.vpn.core.model.SpeedPhase
-import com.mydrop.vpn.core.model.SpeedTestState
 import com.mydrop.vpn.core.model.Subscription
 import com.mydrop.vpn.core.model.SubscriptionUpdate
 import com.mydrop.vpn.core.model.TrafficStats
 import com.mydrop.vpn.core.model.VpnState
+import com.mydrop.vpn.core.model.withProvider
 import com.mydrop.vpn.core.parse.DeepLinkParser
 import com.mydrop.vpn.core.parse.DeepLinkPayload
 import com.mydrop.vpn.core.parse.DnsUriParser
@@ -29,10 +27,6 @@ import com.mydrop.vpn.data.GeoAssetStore
 import com.mydrop.vpn.data.Ipv6Guard
 import com.mydrop.vpn.data.ConnectOutcome
 import com.mydrop.vpn.data.describe
-import com.mydrop.vpn.pairing.PairingInvite
-import com.mydrop.vpn.pairing.SubscriptionTransfer
-import com.mydrop.vpn.remote.RemoteCommand
-import com.mydrop.vpn.remote.RemoteInvite
 import com.mydrop.vpn.vpn.OpenfluxCore
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -102,11 +96,6 @@ class MainViewModel(private val container: AppContainer) : ViewModel() {
     private val _pendingImport = MutableStateFlow<PendingImport?>(null)
     val pendingImport: StateFlow<PendingImport?> = _pendingImport.asStateFlow()
 
-    private val _pairingInvite = MutableStateFlow<PairingInvite?>(null)
-    val pairingInvite: StateFlow<PairingInvite?> = _pairingInvite.asStateFlow()
-    private val _pairingSending = MutableStateFlow(false)
-    val pairingSending: StateFlow<Boolean> = _pairingSending.asStateFlow()
-
     /* ── OpenFlux document-transport sign-in ─────────────────────────────────────────────── */
 
     /**
@@ -124,57 +113,10 @@ class MainViewModel(private val container: AppContainer) : ViewModel() {
     /** The user closed the sign-in without finishing. */
     fun cancelOpenfluxPrompt() = OpenfluxCore.cancelPrompt()
 
-    /* ── The television's remote ─────────────────────────────────────────────────────────── */
-
-    /**
-     * Everything about driving a television lives in the console; this only forwards to it.
-     *
-     * It sits in the container rather than here so that a session survives the screen being left:
-     * walking from the remote to the servers tab and back should not cost a reconnection, and a
-     * link that has to be rebuilt every time is a remote that spends its life saying "connecting".
-     */
-    val remote = container.remoteConsole
-
-    /** Whether the tunnel screen should show a door to the remote at all. */
-    val remoteState = container.remoteConsole.state
-
     /** Snackbars are user-facing text, so they follow the chosen language like the screens do. */
     private val strings = container.strings
 
     val logs: StateFlow<List<LogEntry>> = container.logs.entries
-
-    val updates: StateFlow<com.mydrop.vpn.core.model.UpdateState> = container.updates.state
-
-    init {
-        // The answer to "check for updates" is a fact, not a state: it is read once and then it is
-        // in the way. Left on the screen it also pushed the button it belongs to further down, so
-        // a second tap landed on whatever had slid underneath the finger. Everything that has
-        // nothing left to offer — up to date, or a failure — says so in passing and disappears;
-        // only the states with something to do (a version to download, a download to watch, a file
-        // to install) keep their place on screen.
-        viewModelScope.launch {
-            container.updates.state.collect { state ->
-                when (state) {
-                    is UpdateState.UpToDate -> emit(R.string.settings_update_none, state.version)
-                    is UpdateState.Failed -> emit(state.message)
-                    else -> Unit
-                }
-            }
-        }
-    }
-
-    fun checkForUpdate() = container.updates.check(manual = true)
-
-    fun downloadUpdate() = container.updates.download()
-
-    /**
-     * Needs the activity rather than the application context: the installer is started with
-     * [android.content.Intent.FLAG_ACTIVITY_NEW_TASK] either way, but the permission screen it
-     * may have to open first belongs on top of the app the user is looking at.
-     */
-    fun installUpdate(activity: android.content.Context) = container.updates.install(activity)
-
-    fun dismissUpdate() = container.updates.clear()
 
     val uiState: StateFlow<MainUiState> = combine(
         container.profiles.state,
@@ -197,88 +139,7 @@ class MainViewModel(private val container: AppContainer) : ViewModel() {
             refreshingSubscriptionIds = transient.refreshingSubscriptionIds,
             tunnelIsSimulated = !container.tunnel.isReal,
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState())
-
-    // --------------------------------------------------------- Speed test
-
-    private val _speedTest = MutableStateFlow(SpeedTestState())
-    val speedTest: StateFlow<SpeedTestState> = _speedTest.asStateFlow()
-
-    private var speedTestJob: Job? = null
-
-    /**
-     * Measures through the core when a tunnel is up, and straight out when it is not.
-     *
-     * The probe endpoint is only meaningful while the core it was generated for is running, so a
-     * tunnel that is merely connecting — or one whose configuration could not claim a loopback
-     * port — measures the phone's own connection and the screen says so.
-     */
-    /**
-     * True when the phone is on a connection somebody pays for by the megabyte.
-     *
-     * The test opens six streams and moves up to a few hundred megabytes each way inside its
-     * budget. On Wi-Fi that is nothing; on a metered plan it is a bill, and the screen used to
-     * start moving bytes the instant the button was pressed. The tunnel does not hide this — the
-     * measurement leaves through the phone's own connection either way.
-     */
-    fun speedTestIsMetered(): Boolean = container.isActiveNetworkMetered()
-
-    fun startSpeedTest() {
-        if (speedTestJob?.isActive == true) return
-        val connected = uiState.value.vpnState is VpnState.Connected
-        val probe = if (connected) container.tunnelConfigs.probe.value else null
-        val serverName = uiState.value.selectedNode?.name
-
-        speedTestJob = viewModelScope.launch {
-            // The traces are kept here rather than in the tester: the tester reports one sample at
-            // a time, and how much history a chart wants is a question about the screen.
-            val current = mutableListOf<Long>()
-            var downloadTrace = emptyList<Long>()
-            var uploadTrace = emptyList<Long>()
-            var tracedPhase: SpeedPhase? = null
-
-            container.speedTester.measure(probe, serverName).collect { measured ->
-                if (measured.phase != tracedPhase) {
-                    // The phase that just ended keeps its trace; the results panel draws it after
-                    // the run, so it has to outlive the phase that produced it.
-                    when (tracedPhase) {
-                        SpeedPhase.Download -> downloadTrace = current.toList()
-                        SpeedPhase.Upload -> uploadTrace = current.toList()
-                        else -> Unit
-                    }
-                    current.clear()
-                    tracedPhase = measured.phase
-                }
-                if (measured.running) {
-                    current += measured.liveBytesPerSecond
-                    while (current.size > TRACE_SAMPLES) current.removeAt(0)
-                }
-
-                _speedTest.value = measured.copy(
-                    series = current.toList(),
-                    downloadSeries = if (measured.phase == SpeedPhase.Download) {
-                        current.toList()
-                    } else {
-                        downloadTrace
-                    },
-                    uploadSeries = if (measured.phase == SpeedPhase.Upload) {
-                        current.toList()
-                    } else {
-                        uploadTrace
-                    },
-                )
-            }
-        }
-    }
-
-    fun stopSpeedTest() {
-        speedTestJob?.cancel()
-        speedTestJob = null
-        // Whatever the run managed to measure stays on screen; only the phase goes back to rest.
-        _speedTest.update {
-            it.copy(phase = SpeedPhase.Idle, liveBytesPerSecond = 0, phaseProgress = 0f)
-        }
-    }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MainUiState(settings = container.settings.value))
 
     // ------------------------------------------------------------- Tunnel
 
@@ -422,9 +283,62 @@ class MainViewModel(private val container: AppContainer) : ViewModel() {
      * Only this sweep's ids are cleared at the end, so a single server being measured from its own
      * menu keeps its spinner until its own answer arrives.
      */
-    fun pingAll() {
+    /** Developer mode: walks [node] step by step; see ServerDiagnostics. */
+    suspend fun diagnose(
+        node: com.mydrop.vpn.core.model.ProxyNode,
+        russian: Boolean,
+        onStep: (com.mydrop.vpn.data.ServerDiagnostics.Step) -> Unit,
+    ) {
+        val vpn = uiState.value.vpnState
+        container.serverDiagnostics.run(
+            node = node,
+            settings = container.settings.value,
+            probe = container.tunnelConfigs.probe.value,
+            connected = vpn is VpnState.Connected,
+            activeNodeId = vpn.activeNodeId,
+            russian = russian,
+            onStep = onStep,
+        )
+    }
+
+    /**
+     * Developer mode: the document the core would be handed for [node] alone, with its provider's
+     * settings applied — built here, purely, so looking at it never touches the running tunnel.
+     */
+    fun xrayConfigFor(node: com.mydrop.vpn.core.model.ProxyNode): String? = runCatching {
+        val provider = container.profiles.state.value.subscriptions
+            .firstOrNull { it.id == node.subscriptionId }?.provider
+        com.mydrop.vpn.core.xray.XrayConfigFactory.build(
+            nodes = listOf(node),
+            selected = node,
+            settings = container.settings.value.withProvider(provider),
+            geoAvailable = container.geoAssets.available(),
+            // So the page shows what the tunnel would get, operator and user geo rules included.
+            geoCatalog = container.geoAssets.catalog(),
+        ).json
+    }.getOrNull()
+
+    /** Where each connection went, newest first; see ConnectionLog. */
+    val connections = container.connectionLog.entries
+
+    fun clearConnections() = container.connectionLog.clear()
+
+    /** [host] into one of the user's own rule lists, from the connection log. */
+    fun addCustomRule(action: com.mydrop.vpn.core.model.CustomRules.Action, host: String) {
+        val entry = com.mydrop.vpn.core.model.CustomRules.normalize(host) ?: return
+        updateSettings { it.copy(customRules = it.customRules.adding(action, entry)) }
+    }
+
+    fun pingAll() = pingNodes(container.profiles.nodes.map { it.id })
+
+    /**
+     * The same sweep over some of the servers — one subscription's, from its header on the home
+     * screen. Shares [pingAllJob] with [pingAll], so two sweeps never run side by side.
+     */
+    fun pingNodes(nodeIds: List<String>) {
         if (pingAllJob?.isActive == true) return
-        val nodes = container.profiles.nodes
+        val wanted = nodeIds.toSet()
+        val nodes = container.profiles.nodes.filter { it.id in wanted }
         if (nodes.isEmpty()) return
         val ids = nodes.map { it.id }.toSet()
         pingAllJob = viewModelScope.launch {
@@ -573,65 +487,7 @@ class MainViewModel(private val container: AppContainer) : ViewModel() {
      * pointed the camera at. They asked for it, so it applies straight away.
      */
     fun importText(raw: String) {
-        PairingInvite.decode(raw)?.let {
-            _pairingInvite.value = it
-            return
-        }
-        // A television offering itself as something to drive, rather than something to send a
-        // subscription to. Two codes on two screens, and the phone can tell them apart without
-        // asking which one was pointed at.
-        RemoteInvite.decode(raw)?.let { invite ->
-            viewModelScope.launch {
-                remote.pair(invite)
-                    .onSuccess { emit(R.string.remote_paired, it.hostName) }
-                    .onFailure { emit(R.string.remote_pair_failed) }
-            }
-            return
-        }
         applyImport(DeepLinkParser.parse(raw))
-    }
-
-    fun openRemote(hostId: String? = null) = remote.open(hostId)
-    fun closeRemote() = remote.close()
-    fun lookForTelevisions() = remote.look()
-    fun sendToRemote(command: RemoteCommand) = remote.send(command)
-    fun forgetRemote(hostId: String) = remote.forget(hostId)
-
-    fun dismissPairingInvite() {
-        if (!_pairingSending.value) _pairingInvite.value = null
-    }
-
-    fun sendSubscriptionToTv(subscriptionId: String) {
-        val invite = _pairingInvite.value ?: return
-        val subscription = uiState.value.subscriptions.firstOrNull { it.id == subscriptionId } ?: return
-        if (_pairingSending.value) return
-        viewModelScope.launch {
-            _pairingSending.value = true
-            runCatching {
-                container.pairingClient.send(
-                    invite,
-                    SubscriptionTransfer(
-                        name = subscription.name,
-                        url = subscription.url,
-                        userAgentOverride = subscription.userAgentOverride,
-                        // The TV must get its own per-installation identity. A provider header
-                        // entered manually may contain x-hwid, so strip it even though ordinary
-                        // Yumi subscriptions keep that identity outside this map.
-                        headers = subscription.headers.filterKeys { !it.equals("x-hwid", ignoreCase = true) },
-                    ),
-                )
-            }.onSuccess { result ->
-                if (result.accepted) {
-                    _pairingInvite.value = null
-                    emit(R.string.pairing_sent, result.subscriptionName ?: subscription.name)
-                } else {
-                    emit(R.string.pairing_rejected)
-                }
-            }.onFailure {
-                emit(R.string.pairing_failed)
-            }
-            _pairingSending.value = false
-        }
     }
 
     /**

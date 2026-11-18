@@ -3,6 +3,8 @@ package com.mydrop.vpn.data
 import com.mydrop.vpn.core.model.DnsProfile
 import com.mydrop.vpn.core.model.LatencyResult
 import com.mydrop.vpn.core.model.NodeIdMigration
+import com.mydrop.vpn.core.parse.ProxyUriParser
+import com.mydrop.vpn.core.model.TransportOptions
 import com.mydrop.vpn.core.model.ProxyNode
 import com.mydrop.vpn.core.model.Subscription
 import com.mydrop.vpn.core.model.SubscriptionUserInfo
@@ -89,6 +91,7 @@ class ProfileRepository(
     init {
         dropDemoContent()
         migrateNodeIds()
+        learnFromSources()
 
         // Repair on load, not just on write. Duplicate ids reached the disk before ids were
         // scoped by subscription, and a profile written by that build still crashes the servers
@@ -137,6 +140,47 @@ class ProfileRepository(
                 },
             )
         }
+    }
+
+    /**
+     * Fills in what the link parser has learned to read since these servers were stored, from the
+     * links they were stored from — today, XHTTP's `extra`.
+     *
+     * Otherwise an update that teaches the parser something reaches nobody until their next
+     * subscription refresh, and in between the old reading keeps failing in the old way. That is
+     * exactly how it went: a whitelist server whose link carried `extra` was still dialled without
+     * it after the update — the server answered 413 to the uploads and 400 to the downloads —
+     * because the copy on disk was parsed by the build before. Only the missing part is taken, and
+     * only when the link still describes the same endpoint, so nothing else about a server moves.
+     */
+    private fun learnFromSources() {
+        val learned = store.value.nodes.mapNotNull { node -> learnedFromLink(node)?.let { node.id to it } }.toMap()
+        if (learned.isEmpty()) return
+        store.update { current -> current.copy(nodes = current.nodes.map { learned[it.id] ?: it }) }
+    }
+
+    /** [node] with what its link carries and the stored copy lacks: XHTTP `extra`, `fm`, Hysteria's `pinSHA256`. */
+    private fun learnedFromLink(node: ProxyNode): ProxyNode? {
+        val link = node.sourceUri ?: return null
+        val xhttp = node.transport as? TransportOptions.Xhttp
+        val wantsExtra = xhttp != null && xhttp.extra == null && "extra=" in link
+        val wantsMask = node.finalMask == null && "fm=" in link
+        val wantsPin = node.tls != null && node.tls.pinnedCertSha256.isBlank() && "pinsha256=" in link.lowercase()
+        if (!wantsExtra && !wantsMask && !wantsPin) return null
+
+        val fresh = runCatching { ProxyUriParser.parse(link, node.subscriptionId) }.getOrNull() ?: return null
+        if (!fresh.server.equals(node.server, ignoreCase = true) || fresh.port != node.port) return null
+        var result = node
+        if (wantsExtra) {
+            (fresh.transport as? TransportOptions.Xhttp)?.extra?.let { result = result.copy(transport = xhttp!!.copy(extra = it)) }
+        }
+        if (wantsMask) fresh.finalMask?.let { result = result.copy(finalMask = it) }
+        if (wantsPin) {
+            fresh.tls?.pinnedCertSha256?.takeIf { it.isNotBlank() }?.let { pin ->
+                result = result.copy(tls = node.tls!!.copy(pinnedCertSha256 = pin))
+            }
+        }
+        return result.takeIf { it != node }
     }
 
     /**
@@ -285,6 +329,11 @@ class ProfileRepository(
         userInfo: SubscriptionUserInfo?,
         remoteTitle: String?,
         webPageUrl: String?,
+        announce: String? = null,
+        supportUrl: String? = null,
+        provider: com.mydrop.vpn.core.model.ProviderSettings? = null,
+        fallbackUrl: String? = null,
+        url: String? = null,
     ): Pair<Int, Int> {
         var added = 0
         var removed = 0
@@ -315,6 +364,11 @@ class ProfileRepository(
                             userInfo = userInfo ?: sub.userInfo,
                             remoteTitle = remoteTitle ?: sub.remoteTitle,
                             webPageUrl = webPageUrl ?: sub.webPageUrl,
+                            announce = announce,
+                            supportUrl = supportUrl ?: sub.supportUrl,
+                            provider = provider,
+                            fallbackUrl = fallbackUrl ?: sub.fallbackUrl,
+                            url = url ?: sub.url,
                             lastUpdatedEpochMillis = System.currentTimeMillis(),
                             lastError = null,
                         )

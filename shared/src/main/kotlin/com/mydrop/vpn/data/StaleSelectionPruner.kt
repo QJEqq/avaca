@@ -69,7 +69,6 @@ class StaleSelectionPruner(
                         val pruned = StaleSelection.prune(
                             alive = alive,
                             failover = current.failoverNodeIds,
-                            mobile = current.mobileNodeIds,
                         )
                         applied = pruned
                         if (pruned == null) {
@@ -80,10 +79,10 @@ class StaleSelectionPruner(
                             // is really gone should be dropped. Both lists are rematched against
                             // one pool of unclaimed candidates, so the same server cannot be
                             // handed to an ordinary spare and a mobile one at once.
-                            val claimed = pruned.failover + pruned.mobile
+                            val claimed = pruned.failover
                             val moves = SelectionRematch.rematch(
                                 lost = lostNodes(
-                                    current.failoverNodeIds + current.mobileNodeIds,
+                                    current.failoverNodeIds,
                                     alive,
                                     previousNodes,
                                 ),
@@ -94,9 +93,6 @@ class StaleSelectionPruner(
                             current.copy(
                                 failoverNodeIds = pruned.failover + follow(
                                     current.failoverNodeIds, alive, moves,
-                                ),
-                                mobileNodeIds = pruned.mobile + follow(
-                                    current.mobileNodeIds, alive, moves,
                                 ),
                             )
                         }
@@ -113,7 +109,6 @@ class StaleSelectionPruner(
                     // been emptied while the app was busy proving it had not: the line above logs
                     // the rescue two statements earlier.
                     val failoverLeft = settings.value.failoverNodeIds.isNotEmpty()
-                    val mobileLeft = settings.value.mobileNodeIds.isNotEmpty()
 
                     if (pruned.lostFailover > 0) {
                         logs.info(
@@ -126,21 +121,7 @@ class StaleSelectionPruner(
                         )
                         // Only when it is gone entirely. Losing two of twenty is housekeeping;
                         // losing the last one changes what the app will do next time.
-                        if (pruned.failoverEmptied && !failoverLeft) alerts.listEmptied(mobile = false)
-                    }
-                    if (pruned.lostMobile > 0) {
-                        // Louder than the failover list emptying: that one falling back to the
-                        // subscription is a defensible default, while this one falling back means
-                        // a feature the user switched on has switched itself off.
-                        logs.info(
-                            if (pruned.mobileEmptied) {
-                                R.string.log_mobile_pruned_all
-                            } else {
-                                R.string.log_mobile_pruned
-                            },
-                            pruned.lostMobile,
-                        )
-                        if (pruned.mobileEmptied && !mobileLeft) alerts.listEmptied(mobile = true)
+                        if (pruned.failoverEmptied && !failoverLeft) alerts.listEmptied()
                     }
                 }
         }

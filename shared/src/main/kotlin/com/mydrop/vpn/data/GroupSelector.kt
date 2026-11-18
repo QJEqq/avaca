@@ -81,7 +81,7 @@ class GroupSelector(
     }
 
     private companion object {
-        const val TAG = "YumiFailover"
+        const val TAG = "AvacaFailover"
 
         /** The provider's own observatory looks every two minutes; so does this. */
         const val LOOK_EVERY_MILLIS = 120_000L

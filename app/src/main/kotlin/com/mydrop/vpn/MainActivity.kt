@@ -13,6 +13,7 @@ import android.os.LocaleList
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,7 +27,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mydrop.vpn.core.model.AppLanguage
 import com.mydrop.vpn.ui.MainViewModel
 import com.mydrop.vpn.ui.MyDropApp
-import com.mydrop.vpn.ui.theme.MyDropTheme
+import com.mydrop.vpn.ui.palette
+import com.mydrop.vpn.ui.theme.AvacaPalette
+import com.mydrop.vpn.ui.theme.AvacaTheme
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -69,7 +72,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
-        enableEdgeToEdge()
+        // Light icons on the bars in every system mode: the app is always dark, and the default
+        // follows the system — on a phone in light mode that put dark icons on the night sky.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         super.onCreate(savedInstanceState)
         builtWithLanguage = (application as MyDropApplication).container.settings.value.language
 
@@ -77,8 +85,12 @@ class MainActivity : ComponentActivity() {
         requestNotificationPermissionIfNeeded()
         askToIgnoreBatteryOptimisationsOnce()
 
+        // Before the first frame, so a Git install never flashes graphite on start.
+        AvacaPalette.use((application as MyDropApplication).container.settings.value.appDesign.palette())
+
         setContent {
             val state by viewModel.uiState.collectAsStateWithLifecycle()
+            LaunchedEffect(state.settings.appDesign) { AvacaPalette.use(state.settings.appDesign.palette()) }
 
             // The system VPN consent dialog can only be launched from an Activity, so the
             // ViewModel hands the intent up and the answer is routed back to it.
@@ -98,11 +110,7 @@ class MainActivity : ComponentActivity() {
                 if (state.settings.language != builtWithLanguage) recreate()
             }
 
-            MyDropTheme(
-                themeMode = state.settings.themeMode,
-                dynamicColor = state.settings.dynamicColor,
-                amoled = state.settings.amoled,
-            ) {
+            AvacaTheme {
                 MyDropApp(viewModel = viewModel)
             }
         }

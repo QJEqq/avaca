@@ -93,7 +93,12 @@ object ProxyUriParser {
     // ---------------------------------------------------------------- OpenFlux
 
     private fun parseOpenflux(uri: String , subId: String?): ProxyNode? {
-        val name = urlDecode(uri.substringAfter('#', "")).ifEmpty { "OpenFlux" }
+        // The name lives in two places: the #fragment of a hand-written link, and the "name" of
+        // the config packed inside the link — which is where a subscription service (Supwave)
+        // writes the profile name the operator chose. The fragment wins when there is one.
+        val name = urlDecode(uri.substringAfter('#', "")).ifEmpty { null }
+            ?: openfluxConfigName(uri)
+            ?: "OpenFlux"
         return ProxyNode(
 
             id = "",
@@ -105,6 +110,41 @@ object ProxyUriParser {
             sourceUri = uri,
         ).identified()
     }
+
+    /**
+     * The "name" of the config packed in an openflux:// link — `openflux://v1/` + base64url
+     * (unpadded) of raw DEFLATE of the config's JSON. Null when the link is not that shape or the
+     * config has no name, and the caller falls back. Inflation stops at [MAX_OPENFLUX_CONFIG]: a
+     * real config is a few hundred bytes, and a link from a subscription is untrusted input.
+     */
+    internal fun openfluxConfigName(uri: String): String? {
+        val body = uri.substringBefore('#').removePrefix("openflux://")
+        if (!body.startsWith("v1/")) return null
+        return runCatching {
+            val packed = java.util.Base64.getUrlDecoder().decode(body.removePrefix("v1/"))
+            val inflater = java.util.zip.Inflater(true)
+            val out = java.io.ByteArrayOutputStream()
+            try {
+                inflater.setInput(packed)
+                val buffer = ByteArray(4096)
+                while (!inflater.finished() && out.size() < MAX_OPENFLUX_CONFIG) {
+                    val n = inflater.inflate(buffer)
+                    if (n == 0 && (inflater.needsInput() || inflater.needsDictionary())) break
+                    out.write(buffer, 0, n)
+                }
+            } finally {
+                inflater.end()
+            }
+            val config = Json.parseToJsonElement(String(out.toByteArray(), Charsets.UTF_8)) as? JsonObject
+            (config?.get("name") as? JsonPrimitive)
+                ?.takeIf { it.isString }
+                ?.content
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+        }.getOrNull()
+    }
+
+    private const val MAX_OPENFLUX_CONFIG = 64 * 1024
 
     // ---------------------------------------------------------------- VMess
 
@@ -406,6 +446,7 @@ object ProxyUriParser {
             multiplex = p.multiplex(),
             subscriptionId = subId,
             sourceUri = sourceUri,
+            finalMask = jsonObjectParam(p.q("fm")),
         ).identified()
     }
 
@@ -429,6 +470,9 @@ object ProxyUriParser {
                 path = path,
                 host = hostHeader,
                 mode = q("mode").orEmpty().ifEmpty { "auto" },
+                // The rest of the server's XHTTP settings, which links carry as one JSON object
+                // under `extra` (Remnawave's "xhttp extra", v2rayN's and Happ's links alike).
+                extra = jsonObjectParam(q("extra")),
             )
             // `http`/`h2` and `quic` are deliberately absent, and their absence is the point.
             // The core removed both transports outright and answers a document naming either with
@@ -462,7 +506,9 @@ object ProxyUriParser {
             insecure = qBool("insecure", "allowinsecure", "allow_insecure", "skip-cert-verify", "skip_cert_verify"),
             alpn = splitCsv(q("alpn")),
             fingerprint = q("fp", "fingerprint", "client-fingerprint", "client_fingerprint"),
-            pinnedCertSha256 = q("pcs", "pinnedpeercertsha256", "pinned_peer_cert_sha256").orEmpty(),
+            // `pinSHA256` is Hysteria's name for the same pin; the core takes its hex with or
+            // without colons (`infra/conf/transport_security.go`).
+            pinnedCertSha256 = q("pcs", "pinnedpeercertsha256", "pinned_peer_cert_sha256", "pinsha256").orEmpty(),
             verifyPeerCertByName = q("vcn", "verifypeercertbyname", "verify_peer_cert_by_name").orEmpty(),
             reality = realityKey?.let {
                 RealityOptions(
@@ -521,5 +567,17 @@ object ProxyUriParser {
             }
         }
         return null
+    }
+
+    /**
+     * A link parameter that carries a JSON object — XHTTP's `extra`, the final mask's `fm` — as the
+     * object the core reads, or null when it is absent or is not one. Something that does not parse
+     * is dropped rather than passed on: the core rejects the whole configuration over a malformed
+     * object (`infra/conf/transport_method.go`), not the one server.
+     */
+    internal fun jsonObjectParam(raw: String?): String? {
+        val text = raw?.trim()?.takeIf { it.startsWith("{") } ?: return null
+        val parsed = runCatching { Json.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return null
+        return parsed.takeIf { it.isNotEmpty() }?.toString()
     }
 }

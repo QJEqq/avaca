@@ -86,7 +86,7 @@ class DiagnosticLog(
     }
 
     internal companion object {
-        const val FILE_NAME = "yumi.log"
+        const val FILE_NAME = "avaca.log"
 
         /**
          * The lines of cores that should no longer exist, kept apart from everything else.
@@ -94,7 +94,7 @@ class DiagnosticLog(
          * Smaller than the main journal on purpose: it holds one kind of line, it only fills while
          * a fault is happening, and it is worth nothing if the fault's own noise rotates it away.
          */
-        const val CORES_FILE_NAME = "yumi-cores.log"
+        const val CORES_FILE_NAME = "avaca-cores.log"
 
         /**
          * Two of these at most, so the whole thing is bounded at fifty megabytes.

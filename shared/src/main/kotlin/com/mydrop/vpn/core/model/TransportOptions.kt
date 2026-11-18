@@ -78,6 +78,18 @@ sealed interface TransportOptions {
         /** `auto`, `packet-up`, `stream-up`, `stream-one`; the core decides when left as `auto`. */
         val mode: String = "auto",
         val headers: Map<String, String> = emptyMap(),
+        /**
+         * Everything else the operator set, as the JSON object the core reads under `extra`:
+         * padding and its obfuscation, where the session id and the sequence number travel, the
+         * uplink method, xmux, a separate download leg.
+         *
+         * Kept whole rather than modelled because the server is configured to expect exactly
+         * these, and a client that leaves them out is not a slightly different client but one the
+         * server cannot understand: the session lives in a cookie it never sends, the upload
+         * arrives as a POST body where a header was expected. That was a whitelist server that
+         * connected, measured fine and carried nothing here while working in Happ.
+         */
+        val extra: String? = null,
     ) : TransportOptions {
         override val label: String get() = "XHTTP"
     }

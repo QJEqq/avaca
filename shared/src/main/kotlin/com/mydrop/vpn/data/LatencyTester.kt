@@ -62,7 +62,9 @@ class LatencyTester(private val maxConcurrency: Int = 16) {
         val start = System.nanoTime()
         val ok = when {
             node.protocol.isQuicBased -> quicProbe(node)
-            mode == PingMode.Tls -> tlsHandshake(node)
+            // A real request through the server needs a core; where none is at hand, the TLS
+            // handshake is the next most honest measurement.
+            mode == PingMode.Tls || mode == PingMode.Proxy -> tlsHandshake(node)
             else -> tcpHandshake(node)
         }
         return if (ok) ((System.nanoTime() - start) / 1_000_000).toInt() else null

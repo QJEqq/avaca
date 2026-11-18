@@ -10,7 +10,7 @@ import org.junit.Test
 class SubscriptionTransferUpsertTest {
     @Test
     fun sameUrlUpdatesCredentialsWithoutDuplicatingOrChangingLocalState() {
-        val directory = Files.createTempDirectory("yumi-pair-upsert").toFile()
+        val directory = Files.createTempDirectory("avaca-pair-upsert").toFile()
         try {
             val repository = ProfileRepository(directory, TestScope())
             repository.addSubscription(

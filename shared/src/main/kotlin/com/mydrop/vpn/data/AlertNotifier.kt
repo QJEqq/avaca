@@ -26,7 +26,7 @@ import com.mydrop.vpn.shared.R
  * channel in the system settings — and neither of them touches the other.
  */
 /** What an alert is about, so each kind can be silenced on its own. */
-enum class AlertKind { Server, Dns, Update, Lists }
+enum class AlertKind { Server, Dns, Lists }
 
 class AlertNotifier(
     private val context: Context,
@@ -79,21 +79,11 @@ class AlertNotifier(
      * whole subscription; the mobile list falling empty means the separation between networks has
      * switched itself off. Neither shows anywhere until the day it matters.
      */
-    fun listEmptied(mobile: Boolean) = post(
+    fun listEmptied() = post(
         kind = AlertKind.Lists,
         id = ID_LIST,
         title = strings.get(R.string.alert_list_emptied_title),
-        text = strings.get(
-            if (mobile) R.string.alert_list_emptied_mobile else R.string.alert_list_emptied_failover,
-        ),
-    )
-
-    /** A newer release exists. Not a fault, but it arrives the same way and at the same moments. */
-    fun updateAvailable(version: String) = post(
-        kind = AlertKind.Update,
-        id = ID_UPDATE,
-        title = strings.get(R.string.alert_update_title, version),
-        text = strings.get(R.string.alert_update_text),
+        text = strings.get(R.string.alert_list_emptied_failover),
     )
 
     /**

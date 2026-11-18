@@ -56,7 +56,7 @@ class LogRepository(
         // and they would rotate the file past anything worth keeping within the hour. They stay in
         // the in-memory journal and in logcat, where looking at them is a deliberate act.
         if (level > LogEntry.Level.Debug) {
-            diagnostics?.write(level.name.first(), "Yumi", message)
+            diagnostics?.write(level.name.first(), "Avaca", message)
         }
         val snapshot = synchronized(lock) {
             buffer.addLast(LogEntry(System.currentTimeMillis(), level, message))

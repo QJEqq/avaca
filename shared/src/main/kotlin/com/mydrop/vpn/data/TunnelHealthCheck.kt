@@ -102,7 +102,7 @@ class TunnelHealthCheck(private val logs: LogRepository? = null) {
                 "GET ${ProbeTargets.url(host)} HTTP/1.1\r\n" +
                     "Host: $host\r\n" +
                     "Proxy-Authorization: Basic $credentials\r\n" +
-                    "User-Agent: Yumi\r\n" +
+                    "User-Agent: Avaca\r\n" +
                     // Nothing is reused, and leaving the socket open would hold an outbound
                     // connection on the server for the whole idle timeout.
                     "Connection: close\r\n\r\n"
@@ -152,7 +152,7 @@ class TunnelHealthCheck(private val logs: LogRepository? = null) {
     }
 
     private companion object {
-        const val TAG = "YumiFailover"
+        const val TAG = "AvacaFailover"
 
         /**
          * Comfortably inside the watchdog's probe interval, so a hang cannot stack up — but not

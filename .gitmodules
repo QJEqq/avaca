@@ -1,0 +1,4 @@
+[submodule "third_party/OpenFlux"]
+	path = third_party/OpenFlux
+	url = https://github.com/QJEqq/OpenFlux.git
+	branch = avaca-0.17

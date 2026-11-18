@@ -3,8 +3,11 @@ package com.mydrop.vpn.data
 import android.content.Context
 import com.mydrop.vpn.shared.R
 import com.mydrop.vpn.core.model.ProbeEndpoint
+import com.mydrop.vpn.core.model.ProviderSettings
 import com.mydrop.vpn.core.model.ProxyNode
+import com.mydrop.vpn.core.model.withProvider
 import com.mydrop.vpn.core.model.dialed
+import com.mydrop.vpn.core.xray.GeoCatalog
 import com.mydrop.vpn.core.xray.XrayConfigFactory
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -43,6 +46,8 @@ class TunnelConfigBuilder(
      * after the files landed.
      */
     private val geoAvailable: () -> Boolean = { false },
+    /** The categories those files hold; see [GeoCatalog]. Null when they cannot be read. */
+    private val geoCatalog: () -> GeoCatalog? = { null },
     /**
      * Whether applications may be handed IPv6 addresses through these servers: the members of the
      * one the tunnel starts on, then every member the document holds. See [Ipv6Guard].
@@ -51,6 +56,8 @@ class TunnelConfigBuilder(
      */
     private val ipv6Allowed: (active: List<ProxyNode>, members: List<ProxyNode>) -> Boolean =
         { _, _ -> true },
+    /** What the provider of [ProxyNode]'s subscription set for its servers, if anything. */
+    private val providerOf: (ProxyNode) -> ProviderSettings? = { null },
 ) {
 
     /** What the running document decided about IPv6, and the members it decided it for. */
@@ -142,21 +149,41 @@ class TunnelConfigBuilder(
         // keeps a server without IPv6 from breaking every application that prefers it.
         val members = XrayConfigFactory.members(group, node)
         val activeIds = node.dialed().mapTo(mutableSetOf()) { it.id }
-        val wanted = settings.value
+        // The provider's settings for its own servers, over the user's (see ProviderSettings).
+        val wanted = settings.value.withProvider(providerOf(node))
         val answersIpv6 = wanted.enableIpv6 &&
             ipv6Allowed(members.filter { it.id in activeIds }, members)
         val effective = if (wanted.enableIpv6 && !answersIpv6) wanted.copy(enableIpv6 = false) else wanted
 
         return runCatching {
+            // Addresses through DoH when asked — here, on the way into the document, never stored.
+            val dialGroup = if (effective.resolveServerAddress) {
+                group.map { ServerAddressResolver.resolveNode(it, effective.resolveDohUrl) }
+            } else {
+                group
+            }
             XrayConfigFactory.build(
-                nodes = group,
-                selected = node,
+                nodes = dialGroup,
+                selected = dialGroup.firstOrNull { it.id == node.id } ?: node,
                 settings = effective,
                 probe = probe,
                 dnsOverride = selectedDns(),
                 geoAvailable = geoAvailable,
+                // Read only when the selected server brought routing of its own to check.
+                geoCatalog = if (geoAvailable && (node.carriesOperatorRouting() || effective.customRules.namesCategories())) {
+                    geoCatalog()
+                } else {
+                    null
+                },
             )
         }.onSuccess { document ->
+            if (document.operatorRules > 0 || document.operatorDns) {
+                logs.info(
+                    if (document.operatorDns) R.string.log_operator_routing_dns else R.string.log_operator_routing,
+                    document.operatorRules,
+                    document.operatorRulesDropped,
+                )
+            }
             // Said once per connection rather than swallowed: Xray removed the "do not verify the
             // certificate" switch outright, so a server that relied on it will fail its handshake
             // and the journal has to be able to say why.
@@ -200,3 +227,11 @@ class TunnelConfigBuilder(
         )
     }.getOrNull()
 }
+
+/** Whether this server, or the member the tunnel starts on, came with an operator's routing. */
+private fun ProxyNode.carriesOperatorRouting(): Boolean =
+    (operator ?: dialed().firstOrNull()?.operator)?.routing != null
+
+/** Whether any of the user's own rules names a geo category, which has to be checked against the files. */
+private fun com.mydrop.vpn.core.model.CustomRules.namesCategories(): Boolean =
+    (proxy + direct + block).any(com.mydrop.vpn.core.xray.OperatorDocument::isGeoReference)

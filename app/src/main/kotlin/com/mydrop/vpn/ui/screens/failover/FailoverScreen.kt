@@ -49,7 +49,7 @@ import com.mydrop.vpn.ui.format.pluralServers
  * picker to change three strings, and the copy for both belongs in one place where it can be read
  * side by side.
  */
-enum class NodePickerKind { Failover, Mobile }
+enum class NodePickerKind { Failover }
 
 /**
  * Chooses which servers the tunnel is allowed to use.
@@ -58,8 +58,6 @@ enum class NodePickerKind { Failover, Mobile }
  * subscription. Naming servers explicitly is what makes the feature usable across providers, and
  * it is also the only way to say "not that one" about a server that technically works.
  *
- * For [NodePickerKind.Mobile], empty means the feature does not exist and every network shares one
- * pool. Filled, it becomes the only pool the tunnel may use on a cellular network.
  */
 @Composable
 fun NodePickerScreen(
@@ -74,11 +72,10 @@ fun NodePickerScreen(
 ) {
     // A direct outbound would take traffic out of the tunnel entirely, so it is not offered.
     val candidates = nodes.filter { it.settings != ProxySettings.Direct }
-    val mobile = kind == NodePickerKind.Mobile
-    val chosen = if (mobile) settings.mobileNodeIds else settings.failoverNodeIds
+    val chosen = settings.failoverNodeIds
 
     fun withChosen(ids: Set<String>): (AppSettings) -> AppSettings = { current ->
-        if (mobile) current.copy(mobileNodeIds = ids) else current.copy(failoverNodeIds = ids)
+        current.copy(failoverNodeIds = ids)
     }
 
     LazyColumn(
@@ -88,14 +85,10 @@ fun NodePickerScreen(
     ) {
         item(key = "header") {
             ScreenHeader(
-                title = stringResource(
-                    if (mobile) R.string.mobile_nodes_title else R.string.failover_title,
-                ),
+                title = stringResource(R.string.failover_title),
                 titleStyle = MaterialTheme.typography.headlineLarge,
                 subtitle = if (chosen.isEmpty()) {
-                    stringResource(
-                        if (mobile) R.string.mobile_nodes_off else R.string.failover_automatic,
-                    )
+                    stringResource(R.string.failover_automatic)
                 } else {
                     stringResource(R.string.failover_chosen, pluralServers(chosen.size))
                 },
@@ -112,11 +105,7 @@ fun NodePickerScreen(
 
         item(key = "explainer") {
             Text(
-                text = if (mobile) {
-                    stringResource(R.string.mobile_nodes_explanation)
-                } else {
-                    stringResource(R.string.failover_explanation, FailoverGroup.MAX_GROUP)
-                },
+                text = stringResource(R.string.failover_explanation, FailoverGroup.MAX_GROUP),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -130,13 +119,7 @@ fun NodePickerScreen(
                     modifier = Modifier.padding(horizontal = 12.dp),
                 ) {
                     Text(
-                        stringResource(
-                            if (mobile) {
-                                R.string.mobile_nodes_clear
-                            } else {
-                                R.string.failover_clear_selection
-                            },
-                        ),
+                        stringResource(R.string.failover_clear_selection),
                     )
                 }
             }

@@ -2,25 +2,25 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.util.Properties
 
 /*
- * Release signing credentials live outside the repository, by default in ~/.mydrop-signing/. The
+ * Release signing credentials live outside the repository, by default in ~/.avaca-signing/. The
  * keystore is the one thing here that cannot be regenerated: Android identifies an app by its
- * signing key, so losing it means friends can never update in place — they would have to
+ * signing key, so losing it means users can never update in place — they would have to
  * uninstall first, losing their servers and settings. Keep a backup somewhere that is not this
  * machine.
  *
  * The location is overridable because the default is a guess about the machine rather than about
  * the project. Point it somewhere else with either:
  *
- *     ./gradlew :app:assembleRelease -Pyumi.signingDir=E:/.mydrop-signing
- *     YUMI_SIGNING_DIR=E:/.mydrop-signing ./gradlew :app:assembleRelease
+ *     ./gradlew :app:assembleRelease -Pavaca.signingDir=/path/to/signing
+ *     AVACA_SIGNING_DIR=/path/to/signing ./gradlew :app:assembleRelease
  *
  * A missing file is not an error; it just leaves the release build unsigned, so the project still
  * builds anywhere else.
  */
-val signingDir: File = providers.gradleProperty("yumi.signingDir")
-    .orElse(providers.environmentVariable("YUMI_SIGNING_DIR"))
+val signingDir: File = providers.gradleProperty("avaca.signingDir")
+    .orElse(providers.environmentVariable("AVACA_SIGNING_DIR"))
     .map(::File)
-    .getOrElse(File(System.getProperty("user.home"), ".mydrop-signing"))
+    .getOrElse(File(System.getProperty("user.home"), ".avaca-signing"))
 
 val signingProperties: Properties? = File(signingDir, "keystore.properties")
     .takeIf { it.isFile }
@@ -40,11 +40,11 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.mydrop.vpn"
+        applicationId = "app.avaca.vpn"
         minSdk = 26
         targetSdk = 36
-        versionCode = 33
-        versionName = "2.1.6"
+        versionCode = 1
+        versionName = "1.0.0"
         // ABI selection lives in `splits.abi` below; the two cannot both be set.
     }
 
@@ -118,7 +118,7 @@ android {
  * that has not pulled one, and the check assumes itself away.
  */
 tasks.withType<Test>().configureEach {
-    providers.systemProperty("yumi.realProfile").orNull?.let { systemProperty("yumi.realProfile", it) }
+    providers.systemProperty("avaca.realProfile").orNull?.let { systemProperty("avaca.realProfile", it) }
     testLogging { showStandardStreams = true }
 }
 

@@ -60,5 +60,5 @@ object NativeStderrCapture {
         }
     }
 
-    private const val TAG = "YumiCore"
+    private const val TAG = "AvacaCore"
 }

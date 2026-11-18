@@ -70,19 +70,30 @@ var (
 	protector     Protector
 )
 
+// SYN retransmits before a dial gives up; see installProtector.
+const synRetries = 1
+
 func installProtector() {
 	_ = internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
 		protectorMu.RLock()
 		p := protector
 		protectorMu.RUnlock()
-		if p == nil {
-			return nil
-		}
 		refused := false
 		// The fd is only valid inside Control; taking it out and calling later protects a number
 		// that may by then belong to something else entirely.
 		if err := c.Control(func(fd uintptr) {
-			refused = !p.Protect(int(fd))
+			if p != nil {
+				refused = !p.Protect(int(fd))
+			}
+			// A connection whose SYN goes unanswered is not answered on a retransmit either: a
+			// phone measured it, 4-11% of dials to one server sat silent for the full sixteen
+			// seconds the core waits, and the core's next attempt — a new socket, a new source
+			// port — connected in a third of a second every time. So one retransmit and out
+			// (about three seconds), and the outbound's own retry dials afresh. To the app that
+			// had just been opened, the difference is sixteen seconds of "no internet".
+			if strings.HasPrefix(network, "tcp") {
+				_ = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_TCP, syscall.TCP_SYNCNT, synRetries)
+			}
 		}); err != nil {
 			return err
 		}
@@ -342,9 +353,18 @@ func MeasureOutbounds(tags string, probeURL string, timeoutMillis int) string {
 		return "{}"
 	}
 
+	return measureAll(running, wanted, probeURL, timeoutMillis, 0)
+}
+
+// measureAll times probeURL through each of wanted on the running instance, at most limit at a
+// time (0: all at once), and returns the JSON MeasureOutbounds promises.
+func measureAll(running *core.Instance, wanted []string, probeURL string, timeoutMillis int, limit int) string {
 	timeout := time.Duration(timeoutMillis) * time.Millisecond
 	if timeout <= 0 {
 		timeout = 5 * time.Second
+	}
+	if limit <= 0 || limit > len(wanted) {
+		limit = len(wanted)
 	}
 
 	type result struct {
@@ -352,8 +372,11 @@ func MeasureOutbounds(tags string, probeURL string, timeoutMillis int) string {
 		delay int64
 	}
 	results := make(chan result, len(wanted))
+	slots := make(chan struct{}, limit)
 	for _, tag := range wanted {
 		go func(tag string) {
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			results <- result{tag: tag, delay: measureOne(running, tag, probeURL, timeout)}
 		}(tag)
 	}
@@ -368,6 +391,42 @@ func MeasureOutbounds(tags string, probeURL string, timeoutMillis int) string {
 		return "{}"
 	}
 	return string(encoded)
+}
+
+// ProbeConfig times probeURL through every server outbound of configJSON, on a core of its own.
+//
+// MeasureOutbounds can only ask the core that carries the tunnel, and that core holds only the
+// servers the tunnel may switch to — so the rest of a subscription, and every server while the
+// tunnel is down, could only be timed by a handshake, which says nothing about whether traffic
+// actually crosses a server. This builds a throwaway instance from a document of outbounds alone —
+// no inbound, no tunnel — times each server through it exactly as MeasureOutbounds does, sixteen at
+// a time, and closes it before returning. It shares nothing with the tunnel's instance; while the
+// tunnel is up the same dialer controller protects its sockets, so the probes leave by the phone's
+// own network rather than through the tunnel.
+func ProbeConfig(configJSON string, probeURL string, timeoutMillis int) string {
+	config, err := serial.LoadJSONConfig(strings.NewReader(configJSON))
+	if err != nil {
+		return "{}"
+	}
+	wanted := make([]string, 0, 16)
+	for _, outbound := range config.GetOutbound() {
+		if strings.HasPrefix(outbound.GetTag(), NodeTagPrefix) {
+			wanted = append(wanted, outbound.GetTag())
+		}
+	}
+	if len(wanted) == 0 {
+		return "{}"
+	}
+	probe, err := core.New(config)
+	if err != nil {
+		return "{}"
+	}
+	if err := probe.Start(); err != nil {
+		probe.Close()
+		return "{}"
+	}
+	defer probe.Close()
+	return measureAll(probe, wanted, probeURL, timeoutMillis, 16)
 }
 
 // measureOne returns the round trip in milliseconds, or -1 when the outbound did not deliver.
@@ -476,6 +535,20 @@ func Start(configJSON string, tunFd int, pinnedTag string, p Protector) error {
 	if err != nil {
 		return err
 	}
+	if pinnedTag != "" && !tags[pinnedTag] {
+		_ = started.Close()
+		return errors.New("no outbound tagged " + pinnedTag + " in this configuration")
+	}
+	// Pinned before the inbound starts reading the tunnel, not after. Android hands the tunnel a
+	// burst of DNS and reconnects the moment it comes up; anything dispatched in between went
+	// through the balancer unpinned — to a random server of the whole subscription — and a UDP
+	// link to a resolver stays on whatever server it was first given.
+	pinned := false
+	if pinnedTag != "" {
+		if overrider, err := overriderFor(started); err == nil && overrider.SetOverrideTarget(BalancerTag, pinnedTag) == nil {
+			pinned = true
+		}
+	}
 	if err := started.Start(); err != nil {
 		// Otherwise a core that failed halfway through Start stays half-alive with its listeners
 		// bound, and the next attempt fails on the address instead of on the real reason.
@@ -493,11 +566,7 @@ func Start(configJSON string, tunFd int, pinnedTag string, p Protector) error {
 	nodeTags = tags
 	tagsMu.Unlock()
 
-	if pinnedTag != "" {
-		if !tags[pinnedTag] {
-			_ = started.Close()
-			return errors.New("no outbound tagged " + pinnedTag + " in this configuration")
-		}
+	if pinnedTag != "" && !pinned {
 		overrider, err := overriderFor(started)
 		if err != nil {
 			_ = started.Close()

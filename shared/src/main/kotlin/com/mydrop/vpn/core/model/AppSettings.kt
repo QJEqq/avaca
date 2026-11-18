@@ -42,6 +42,28 @@ enum class AppLanguage(val tag: String?, @StringRes val labelRes: Int) {
  * A choice rather than a replacement, because the two answer different questions: the waves say
  * how much is moving, the planet says where it is going. Neither is the better one.
  */
+/**
+ * How the app looks: the layout of the main screen and the palette of every screen.
+ *
+ * [Avaca] is the graphite planet drawn in coastlines with a sand accent; [Git] is a dotted globe on
+ * black with a blue accent. Only the main screen changes its layout — settings and the add sheet
+ * keep theirs and take the palette.
+ */
+@Serializable
+enum class AppDesign(@StringRes val labelRes: Int) {
+    Avaca(R.string.design_avaca),
+    Git(R.string.design_git),
+}
+
+/** The order of the servers inside each group on the Git main screen. */
+@Serializable
+enum class ServerSort(@StringRes val labelRes: Int) {
+    AsListed(R.string.sort_as_listed),
+    Latency(R.string.sort_latency),
+    Name(R.string.sort_name),
+    Protocol(R.string.sort_protocol),
+}
+
 @Serializable
 enum class Visualizer(@StringRes val labelRes: Int) {
     Waves(R.string.visualizer_waves),
@@ -74,6 +96,13 @@ enum class PingMode(@StringRes val labelRes: Int, @StringRes val descriptionRes:
     Tcp(R.string.ping_tcp, R.string.ping_tcp_description),
     Tls(R.string.ping_tls, R.string.ping_tls_description),
     Median(R.string.ping_median, R.string.ping_median_description),
+
+    /**
+     * A real request through the server itself, timed end to end: the only measurement that
+     * notices a server whose port answers while nothing crosses it. Falls back to [Tls] where it
+     * cannot be taken.
+     */
+    Proxy(R.string.ping_proxy, R.string.ping_proxy_description),
 }
 
 @Serializable
@@ -95,9 +124,22 @@ data class AppSettings(
     val palette: Palette = Palette.Glacier,
     val amoled: Boolean = false,
     val language: AppLanguage = AppLanguage.System,
+    /** See [AppDesign]. */
+    val appDesign: AppDesign = AppDesign.Avaca,
+    /** Whether the design was picked. Until it is, the app opens on the picker, not the main screen. */
+    val designChosen: Boolean = false,
 
     // Routing
     val routingMode: RoutingMode = RoutingMode.Rules,
+    /**
+     * Whether a server from an operator's Xray document also brings that document's routing rules
+     * and DNS servers, the way Happ applies them. The outbound itself is the operator's either
+     * way; this decides only where traffic goes and who resolves names. On by default, because
+     * the operator wrote the rules for the servers they run.
+     */
+    val operatorRouting: Boolean = true,
+    /** The user's own rules, which come before everyone else's; see [CustomRules]. */
+    val customRules: CustomRules = CustomRules(),
     val bypassLan: Boolean = true,
     val blockAds: Boolean = false,
     /**
@@ -115,6 +157,38 @@ data class AppSettings(
     // Tunnel
     val enableIpv6: Boolean = false,
     val mtu: Int = 9000,
+    /**
+     * Xray mux on servers that can carry it: several connections share one connection to the
+     * server, so a page that opens dozens of them waits for fewer handshakes. Off by default — the
+     * server has to speak it too — and skipped where it cannot work (XTLS Vision, XHTTP, QUIC-based
+     * protocols, WireGuard, OpenFlux).
+     */
+    val muxEnabled: Boolean = false,
+    /** Connections sharing one mux connection (Xray `concurrency`). */
+    val muxConcurrency: Int = 8,
+    /** UDP sessions over mux (Xray `xudpConcurrency`). */
+    val muxXudpConcurrency: Int = 16,
+    /**
+     * Splits the TLS ClientHello into pieces on the way to the server, so DPI that reads the site's
+     * name out of the first packet finds nothing whole there. Xray `fragment` on a freedom outbound
+     * the proxy connection is dialled through.
+     */
+    val fragmentEnabled: Boolean = false,
+    /** Which packets to split: "tlshello", or a range of packet numbers such as "1-3". */
+    val fragmentPackets: String = "tlshello",
+    /** Piece sizes in bytes, "min-max". */
+    val fragmentLength: String = "100-200",
+    /** Pause between pieces in milliseconds, "min-max". */
+    val fragmentInterval: String = "10-20",
+    /**
+     * Resolve server domains through DNS over HTTPS instead of the operator's resolver, which can
+     * answer for a blocked server with an address that goes nowhere. See ServerAddressResolver.
+     */
+    val resolveServerAddress: Boolean = false,
+    /** The DoH endpoint asked, in wire format. */
+    val resolveDohUrl: String = "https://1.1.1.1/dns-query",
+    /** Shows the tools for people who run their own servers: diagnostics, the core's config, log level. */
+    val developerMode: Boolean = false,
     val splitTunnelMode: SplitTunnelMode = SplitTunnelMode.Off,
     val splitTunnelPackages: Set<String> = emptySet(),
 
@@ -157,7 +231,7 @@ data class AppSettings(
      * full handshake is the cheapest probe that fails when the thing the user cares about fails —
      * and for REALITY it is the difference between "the port is open" and "the disguise works".
      */
-    val pingMode: PingMode = PingMode.Tls,
+    val pingMode: PingMode = PingMode.Proxy,
     val autoConnectOnBoot: Boolean = false,
     val autoSelectFastest: Boolean = false,
     // Hands the core a group of servers instead of one, so a server that stops answering is
@@ -183,46 +257,6 @@ data class AppSettings(
      * neighbours from the chosen server's own subscription.
      */
     val failoverNodeIds: Set<String> = emptySet(),
-    /**
-     * Servers the tunnel may use while the phone is on a cellular network.
-     *
-     * Empty means the feature does not exist: one pool for every network, exactly as before. That
-     * is deliberate — a list nobody filled in must not change anybody's behaviour.
-     *
-     * Filled, it becomes the *only* pool while the phone is on cellular: the tunnel moves onto one
-     * of these when the network becomes cellular, and a failure there is replaced from this list
-     * and no other. Providers sell servers tuned for mobile networks, and the point of naming them
-     * is to actually be on one when it matters.
-     *
-     * Cellular means cellular — [android.net.NetworkCapabilities.TRANSPORT_CELLULAR] — and not
-     * "metered". A 5G plan can report itself temporarily unmetered, and a home Wi-Fi can be marked
-     * metered by its owner; keying off the meter would switch the feature off and on for reasons
-     * that have nothing to do with which network the phone is on.
-     */
-    val mobileNodeIds: Set<String> = emptySet(),
-    /**
-     * Whether the mobile list is a fallback rather than the pool, while the phone is on cellular.
-     *
-     * Off, [mobileNodeIds] is the only place cellular traffic may go, which is the point of naming
-     * servers for it. On, the ordinary servers are tried first and the mobile list is what the
-     * tunnel falls back to once they stop answering *on this network* — for somebody whose mobile
-     * servers are slower, or cost more, or are simply held in reserve.
-     *
-     * The check behind "stop answering" is deliberately expensive: the whole eligible list is
-     * measured rather than a sample of seven. A sample is right for finding somewhere to go and
-     * wrong for concluding that nowhere is left, and a phone watched through one bad evening drew
-     * seven dead servers while live ones sat in the list untouched. Deciding to abandon the
-     * ordinary servers on that evidence would abandon them permanently.
-     */
-    val preferOrdinaryOnCellular: Boolean = false,
-    /**
-     * Whether returning to Wi-Fi puts the tunnel back on the exact server it left.
-     *
-     * Off, coming home simply runs the ordinary choice, which may land somewhere else and is one
-     * fewer thing to reason about. On, the server chosen before leaving is remembered and restored
-     * — predictable, at the cost of one more switch.
-     */
-    val restoreWifiNodeOnWifi: Boolean = false,
     val subscriptionAutoUpdate: Boolean = true,
     /**
      * How often subscriptions refresh themselves, in minutes.
@@ -251,23 +285,7 @@ data class AppSettings(
      */
     val alertServer: Boolean = true,
     val alertDns: Boolean = true,
-    val alertUpdate: Boolean = true,
     val alertLists: Boolean = true,
-
-    // Updates
-    /**
-     * Whether the app asks GitHub twice a day whether a newer release exists.
-     *
-     * On by default. The app is distributed outside any store, so nothing updates it unless it
-     * updates itself, and the people running the oldest builds are by definition the ones who
-     * never saw the announcement of the fix they need.
-     */
-    val updateAutoCheck: Boolean = true,
-    /**
-     * When the last check happened, wall clock. Persisted so that opening the app six times a day
-     * still amounts to one check rather than six — see [com.mydrop.vpn.data.UpdateScheduler].
-     */
-    val lastUpdateCheckEpochMillis: Long = 0L,
 
     // Server list
     /**
@@ -279,6 +297,8 @@ data class AppSettings(
      * takes its entry with it the moment nothing renders that group any more.
      */
     val collapsedGroupIds: Set<String> = emptySet(),
+    /** See [ServerSort]. */
+    val serverSort: ServerSort = ServerSort.AsListed,
 
     // Background
     /**

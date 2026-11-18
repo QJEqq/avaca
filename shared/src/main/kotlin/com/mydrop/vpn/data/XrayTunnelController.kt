@@ -173,7 +173,7 @@ class XrayTunnelController(
     }
 
     private companion object {
-        const val TAG = "YumiCore"
+        const val TAG = "AvacaCore"
 
         /**
          * Per-candidate budget. They are measured in parallel, so this is how long the whole sweep

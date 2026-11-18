@@ -30,7 +30,7 @@ import kotlinx.serialization.json.jsonPrimitive
  */
 object XrayCore {
 
-    private const val TAG = "YumiCore"
+    private const val TAG = "AvacaCore"
 
     /**
      * The revision this core was built from, or null when the native library will not load at all.

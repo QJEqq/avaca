@@ -386,4 +386,28 @@ class ProxyUriParserTest {
         )
         assertEquals("decoy.com", explicitNode.tls?.serverName)
     }
+
+    // A link as Supwave serves it: the profile name is inside the packed config, not in a
+    // #fragment. Made with OpenFlux's own oflink, name "Обход белых списков - OpenFlux".
+    private val namedOpenfluxLink =
+        "openflux://v1/pI5NSgNBFISvMpTbNu3_T4O4c-sBxMWbmacTiD1N92ucELLIIivv4B0iCqIQr_D6RhJ15TbUqj6K4pvB0wPDQZ91VZa61tdKV_qmn-WpLKuy0C99Lwv90LW-VLvVdWB_NckDDDzf9zImYTiJmQ0SN5EFDlRvFxg0vRceNmedSHDW7sBAIvkU-igJ7mYGmYaNed1TbBMMcpz87ZOz9hePpuRbHkYx28duLPxD7WVHqbvY2z84PDo-OT07p7pp-e5_x_x2_j0A"
+
+    @Test
+    fun `openflux name comes from the packed config when the link has no fragment`() {
+        val node = ProxyUriParser.parse(namedOpenfluxLink)
+        assertNotNull(node)
+        assertEquals("Обход белых списков - OpenFlux", node!!.name)
+        assertEquals(Protocol.OPENFLUX, node.protocol)
+    }
+
+    @Test
+    fun `openflux fragment still wins over the packed name`() {
+        assertEquals("Мой обход", ProxyUriParser.parse("$namedOpenfluxLink#%D0%9C%D0%BE%D0%B9%20%D0%BE%D0%B1%D1%85%D0%BE%D0%B4")!!.name)
+    }
+
+    @Test
+    fun `openflux link that cannot be unpacked falls back to the plain name`() {
+        assertEquals("OpenFlux", ProxyUriParser.parse("openflux://v1/not-a-real-config")!!.name)
+        assertNull(ProxyUriParser.openfluxConfigName("openflux://v2/whatever"))
+    }
 }

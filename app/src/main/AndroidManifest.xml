@@ -28,14 +28,6 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
-    <!--
-      Handing a downloaded APK to Android's package installer. This permission only buys the right
-      to *ask*: the installer still shows its own confirmation, and on Android 8 and later the user
-      has to have allowed this app to install packages at all, in a settings screen no app can
-      raise on its own. The app is distributed outside any store, so without this an update means
-      finding the release page in a browser.
-    -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!--
       Split tunnelling has to list the apps that can originate traffic, and on Android 11+ that
@@ -81,11 +73,6 @@
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.MyDrop.Splash">
 
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-
             <!--
               Long-pressing the quick settings tile. With nothing answering this action the
               system falls back to the app's page in Settings, which is not what anybody
@@ -103,7 +90,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="happ" />
-                <data android:scheme="mydrop" />
+                <data android:scheme="avaca" />
             </intent-filter>
 
             <!--
@@ -138,6 +125,102 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <!--
+          One launcher entry per logo variant, all opening MainActivity; exactly one is enabled at a
+          time. Settings → Appearance switches between them (AppIcons.kt). The first is the default.
+        -->
+        <activity-alias
+            android:name=".AppIconCharcoal"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".AppIconEmerald"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_2"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_2"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".AppIconMidnight"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_3"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_3"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".AppIconBordeaux"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_4"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_4"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".AppIconBronze"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_5"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_5"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".AppIconPlum"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_6"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_6"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+        <activity-alias
+            android:name=".AppIconPine"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_7"
+            android:label="@string/app_name"
+            android:roundIcon="@mipmap/ic_launcher_7"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
 
         <!--
           The tunnel itself: the VpnService that owns the TUN descriptor and the foreground
@@ -189,22 +272,6 @@
                 <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
             </intent-filter>
         </receiver>
-
-        <!--
-          The one file the package installer is allowed to read: the APK just downloaded. Scoped
-          to a single directory in @xml/update_paths, and not exported.
-        -->
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.updates"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/update_paths" />
-        </provider>
-
-
     </application>
 
 </manifest>

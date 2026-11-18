@@ -100,7 +100,7 @@ class MyDropVpnService : VpnService() {
 
         private const val NOTIFICATION_ID = 1
         private const val CHANNEL_ID = "mydrop_tunnel"
-        private const val NATIVE_TAG = "YumiCore"
+        private const val NATIVE_TAG = "AvacaCore"
 
         /** gRPC's word for "the caller hung up", which on these streams is always us. */
         private const val CANCELLED = "context canceled"
@@ -444,6 +444,9 @@ class MyDropVpnService : VpnService() {
     private var lastReportedInterfaceName: String? = null
 
     private val logs by lazy { (application as MyDropApplication).container.logs }
+    private val connectionLog by lazy { (application as MyDropApplication).container.connectionLog }
+    private val dnsAnswers by lazy { (application as MyDropApplication).container.dnsAnswers }
+    private val appSettings by lazy { (application as MyDropApplication).container.settings }
 
     /** Where the lines of cores that should not exist go. Empty on a healthy phone. */
     private val coreLeakLog by lazy { (application as MyDropApplication).container.coreLeakLog }
@@ -1364,7 +1367,7 @@ class MyDropVpnService : VpnService() {
     private fun establishTunnel(): ParcelFileDescriptor {
         val settings = (application as MyDropApplication).container.settings.value
         val builder = Builder()
-        builder.setSession(nodeName.ifEmpty { "Yumi" })
+        builder.setSession(nodeName.ifEmpty { "Avaca" })
         builder.setMtu(settings.mtu)
 
         builder.addAddress(XrayConfigFactory.TUN_ADDRESS_V4, XrayConfigFactory.TUN_PREFIX_V4)
@@ -1526,6 +1529,9 @@ class MyDropVpnService : VpnService() {
      * what reaches the journal.
      */
     private fun writeCoreLine(level: LogEntry.Level, message: String) {
+        // Taken before the rate limit below, which exists to keep the journal readable and would
+        // otherwise thin out exactly the lines this list is for.
+        if (appSettings.value.developerMode && !connectionLog.offer(message)) dnsAnswers.offer(message)
         noteCoreGeneration(message, level)
         val verdict = coreChatter.admit(SystemClock.elapsedRealtime())
         if (verdict.suppressed > 0) {
@@ -1583,7 +1589,7 @@ class MyDropVpnService : VpnService() {
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(if (nodeName.isEmpty()) "Yumi" else nodeName)
+            .setContentTitle(if (nodeName.isEmpty()) "Avaca" else nodeName)
             .setContentText(
                 strings.get(
                     when (_state.value) {

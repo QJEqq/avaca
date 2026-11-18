@@ -825,4 +825,92 @@ class XrayConfigFactoryTest {
         assertEquals("a.example", result.server)
         assertEquals("Auto", result.name)
     }
+
+    // ------------------------------------------------------------- mux and fragmentation
+
+    private val reality = TlsOptions(
+        enabled = true,
+        serverName = "www.example.com",
+        reality = RealityOptions(publicKey = "pbk", shortId = "ab"),
+    )
+
+    @Test
+    fun `mux rides a plain reality server and stays off vision, xhttp and openflux`() {
+        val plain = node(id = "plain", tls = reality)
+        val vision = node(
+            id = "vision",
+            settings = ProxySettings.Vless(uuid = "11111111-2222-3333-4444-555555555555", flow = "xtls-rprx-vision"),
+            tls = reality,
+        )
+        val xhttp = node(id = "xhttp", tls = reality, transport = TransportOptions.Xhttp(host = "h", path = "/p"))
+        val openflux = node(id = "of", server = "openflux", port = 0, settings = ProxySettings.Openflux(link = "openflux://v1/x"))
+        val config = build(plain, vision, xhttp, openflux, settings = AppSettings(muxEnabled = true, muxConcurrency = 16))
+        val byTag = config.outbounds().associateBy { it["tag"]!!.jsonPrimitive.content }
+
+        val mux = byTag.getValue(XrayConfigFactory.nodeTag("plain"))["mux"]!!.jsonObject
+        assertEquals("true", mux["enabled"]!!.jsonPrimitive.content)
+        assertEquals(16, mux["concurrency"]!!.jsonPrimitive.content.toInt())
+        listOf("vision", "xhttp", "of").forEach { id ->
+            assertNull("no mux on $id", byTag.getValue(XrayConfigFactory.nodeTag(id))["mux"])
+        }
+    }
+
+    @Test
+    fun `fragmentation dials tls servers through a fragment outbound and only when asked`() {
+        val plain = node(id = "plain", tls = reality)
+        val clear = node(id = "clear")
+        val on = build(plain, clear, settings = AppSettings(fragmentEnabled = true, fragmentLength = "50-80"))
+        val byTag = on.outbounds().associateBy { it["tag"]!!.jsonPrimitive.content }
+
+        val sockopt = byTag.getValue(XrayConfigFactory.nodeTag("plain"))["streamSettings"]!!
+            .jsonObject["sockopt"]!!.jsonObject
+        assertEquals(XrayConfigFactory.FRAGMENT_TAG, sockopt["dialerProxy"]!!.jsonPrimitive.content)
+        // A server without TLS has no hello to split and is dialled as before.
+        val clearStream = byTag.getValue(XrayConfigFactory.nodeTag("clear"))["streamSettings"]?.jsonObject
+        assertNull(clearStream?.get("sockopt"))
+
+        val fragment = byTag.getValue(XrayConfigFactory.FRAGMENT_TAG)
+        assertEquals("freedom", fragment["protocol"]!!.jsonPrimitive.content)
+        val spec = fragment["settings"]!!.jsonObject["fragment"]!!.jsonObject
+        assertEquals("tlshello", spec["packets"]!!.jsonPrimitive.content)
+        assertEquals("50-80", spec["length"]!!.jsonPrimitive.content)
+
+        val off = build(plain, clear)
+        assertFalse(off.outbounds().any { it["tag"]!!.jsonPrimitive.content == XrayConfigFactory.FRAGMENT_TAG })
+
+        // Handed to the real core by hand: build/xray-configs/mux-fragment.json.
+        val both = XrayConfigFactory.build(
+            nodes = listOf(plain),
+            selected = plain,
+            settings = AppSettings(muxEnabled = true, fragmentEnabled = true),
+            geoAvailable = false,
+        )
+        java.io.File("build/xray-configs").mkdirs()
+        java.io.File("build/xray-configs/mux-fragment.json").writeText(both.json)
+    }
+
+    @Test
+    fun `a fragment setting that does not parse falls back instead of breaking the config`() {
+        val plain = node(id = "plain", tls = reality)
+        val config = build(plain, settings = AppSettings(fragmentEnabled = true, fragmentLength = "lots", fragmentInterval = "1-"))
+        val fragment = config.outbounds().first { it["tag"]!!.jsonPrimitive.content == XrayConfigFactory.FRAGMENT_TAG }
+        val spec = fragment["settings"]!!.jsonObject["fragment"]!!.jsonObject
+        assertEquals("100-200", spec["length"]!!.jsonPrimitive.content)
+        assertEquals("10-20", spec["interval"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `the probe document holds the servers' outbounds and nothing else`() {
+        val plain = node(id = "plain", tls = reality)
+        val openflux = node(id = "of", server = "openflux", port = 0, settings = ProxySettings.Openflux(link = "openflux://v1/x"))
+        val json = XrayConfigFactory.buildProbe(listOf(plain, openflux), AppSettings(fragmentEnabled = true))!!
+        val document = Json.parseToJsonElement(json).jsonObject
+        assertNull(document["inbounds"])
+        assertNull(document["routing"])
+        val tags = document.outbounds().map { it["tag"]!!.jsonPrimitive.content }
+        assertEquals(listOf(XrayConfigFactory.nodeTag("plain"), XrayConfigFactory.FRAGMENT_TAG), tags)
+        assertNull(XrayConfigFactory.buildProbe(listOf(openflux), AppSettings()))
+        java.io.File("build/xray-configs").mkdirs()
+        java.io.File("build/xray-configs/probe.json").writeText(json)
+    }
 }

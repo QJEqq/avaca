@@ -9,9 +9,6 @@ import com.mydrop.vpn.core.model.NodeIdMigration
 import com.mydrop.vpn.core.model.VpnState
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import com.mydrop.vpn.pairing.PairingClient
-import com.mydrop.vpn.remote.RemoteClient
-import com.mydrop.vpn.remote.RemoteProbe
 
 /**
  * Manual dependency graph. The object count here is small enough that a DI framework would add
@@ -98,54 +95,24 @@ class AppContainer(context: Context) {
             when (kind) {
                 AlertKind.Server -> it.alertServer
                 AlertKind.Dns -> it.alertDns
-                AlertKind.Update -> it.alertUpdate
                 AlertKind.Lists -> it.alertLists
             }
         }
     })
 
     val logs = LogRepository(strings, diagnostics)
+
+    /** Where each connection went; fed by the service while developer mode is on. */
+    val connectionLog = ConnectionLog()
+
+    /** Which resolvers have been answering; fed alongside [connectionLog]. */
+    val dnsAnswers = DnsAnswerLog()
     val profiles = ProfileRepository(context.filesDir, applicationScope, writeFailure)
     val latencyTester = LatencyTester()
     val tunnelHealth = TunnelHealthCheck(logs)
-    val speedTester = SpeedTester(logs, strings)
-    val pairingClient = PairingClient(appContext)
 
-    /**
-     * What this device calls itself on the local network.
-     *
-     * The set says so out loud — it is the thing being looked for, and "Yumi TV" beside the model
-     * is what somebody picks out of a list on their phone. The phone answers with its model alone,
-     * because the only place that name is ever shown is the television's own list of remotes.
-     */
-    /** Which of the two apps this process is. The remote's two halves are the only users. */
-    private val isTelevision = appContext.packageName.startsWith("com.mydrop.vpn.tv")
-
-    private val remoteDeviceName: String =
-        if (isTelevision) {
-            "Yumi TV · ${android.os.Build.MODEL}"
-        } else {
-            android.os.Build.MODEL.orEmpty().ifBlank { "Phone" }
-        }
-
-    /** Both halves of the remote control live here; only one of them is ever used per app. */
-    val remote = RemoteRepository(
-        directory = context.filesDir,
-        scope = applicationScope,
-        deviceName = { remoteDeviceName },
-        onWriteFailure = writeFailure,
-    )
-    val remoteClient = RemoteClient(appContext)
-    val remoteProbe = RemoteProbe(appContext)
-
-    /** The phone's end. On a television it is built and never started. */
-    val remoteConsole = RemoteConsole(
-        scope = applicationScope,
-        store = remote,
-        client = remoteClient,
-        probe = remoteProbe,
-        deviceName = { remoteDeviceName },
-    )
+    /** Developer mode's step-by-step server check; lazy, because [tunnel] is built further down. */
+    val serverDiagnostics by lazy { ServerDiagnostics(tunnel, tunnelHealth, dnsAnswers) }
 
     /**
      * Identity handed to panels that count devices. Created on first use and kept in settings, so
@@ -164,7 +131,7 @@ class AppContainer(context: Context) {
         // inject this install's personal openflux:// line into the subscription; the "Yumi/..."
         // prefix is left intact so the panel still picks the same format it already serves us. Must
         // equal the augmenter's POD_UA_MARKER (default "AVACA-Pod").
-        userAgent = "Yumi/$versionName (Android ${android.os.Build.VERSION.RELEASE}; " +
+        userAgent = "Avaca/$versionName (Android ${android.os.Build.VERSION.RELEASE}; " +
             "${android.os.Build.MODEL}) AVACA-Pod",
         identity = { deviceIdentity() },
     )
@@ -179,9 +146,13 @@ class AppContainer(context: Context) {
         // inbound to download through, and the builder needs to know whether the files are there.
         // Neither is asked until a configuration is actually being built.
         geoAvailable = { geoAssets.available() },
+        geoCatalog = { geoAssets.catalog() },
         // Late-bound for the same reason: the guard needs the launcher, which needs the tunnel,
         // which needs this builder.
         ipv6Allowed = { active, members -> ipv6Guard.allows(active, members) },
+        providerOf = { node ->
+            profiles.state.value.subscriptions.firstOrNull { it.id == node.subscriptionId }?.provider
+        },
     )
 
     /**
@@ -190,35 +161,20 @@ class AppContainer(context: Context) {
      * Deliberately not the whole subscription: each member is an outbound in the document the core
      * parses at startup, and three hundred of them would be paid for on every connect by everyone,
      * to make instant a switch that will never happen. The membership is exactly the places the
-     * app itself can decide to go — the chosen server, the mobile list, and the failover pool —
+     * app itself can decide to go — the chosen server and the failover pool —
      * and anything outside it still works, just the old expensive way.
      */
     private fun switchableGroup(selected: com.mydrop.vpn.core.model.ProxyNode):
         List<com.mydrop.vpn.core.model.ProxyNode> {
         val state = profiles.state.value
-        val current = settings.value
-        val byId = state.nodes.associateBy { it.id }
-        // Truncated here rather than by the `take` at the end, which trims the tail — and the
-        // tail is the ordinary spares. A long mobile list used to consume every slot before they
-        // were ever reached.
-        val named = current.mobileNodeIds.mapNotNull(byId::get)
-        val mobile = named.take(com.mydrop.vpn.core.model.FailoverGroup.mobileSlots(named.size))
         val failover = com.mydrop.vpn.core.model.FailoverGroup.candidates(
             nodes = state.nodes,
             selected = selected,
             latencies = state.latencies,
-            limit = com.mydrop.vpn.core.model.FailoverGroup.roomFor(named.size),
-            chosen = current.failoverNodeIds,
-            // Excluded here for the same reason FailoverWatchdog.swapAwayFrom excludes them: the
-            // mobile servers are added above, by name, and a candidate list that can also contain
-            // them spends slots on duplicates that `distinctBy` then throws away — a group smaller
-            // than the twenty-four it was sized for. More than tidiness: the watchdog and this
-            // have to compute the same list, or the lot can fall on a server the core was never
-            // told about and an instant switch becomes a reconnect.
-            exclude = current.mobileNodeIds,
+            limit = com.mydrop.vpn.core.model.FailoverGroup.SWITCHABLE,
+            chosen = settings.value.failoverNodeIds,
         )
-        // The chosen server first, so a truncated group still contains the one that matters.
-        return (listOf(selected) + mobile + failover).distinctBy { it.id }.take(SWITCHABLE_LIMIT)
+        return (listOf(selected) + failover).distinctBy { it.id }.take(SWITCHABLE_LIMIT)
     }
 
     /**
@@ -235,7 +191,6 @@ class AppContainer(context: Context) {
             settings.update { current ->
                 current.copy(
                     failoverNodeIds = NodeIdMigration.follow(current.failoverNodeIds, moved),
-                    mobileNodeIds = NodeIdMigration.follow(current.mobileNodeIds, moved),
                 )
             }
             logs.debug(R.string.log_node_ids_migrated, moved.size)
@@ -282,22 +237,6 @@ class AppContainer(context: Context) {
     )
 
     /**
-     * The television's end of the remote control, and nothing at all on a phone.
-     *
-     * Here rather than in the screen's view model on purpose. The activity dies when somebody
-     * presses Home; a running tunnel keeps the process alive through its own foreground service,
-     * and this is what lets the phone still switch the set off after the app has been left.
-     */
-    val remoteHost: RemoteHost? = if (!isTelevision) null else RemoteHost(
-        context = appContext,
-        scope = applicationScope,
-        store = remote,
-        profiles = profiles,
-        tunnel = tunnel,
-        launcher = tunnelLauncher,
-    )
-
-    /**
      * Moves the tunnel off a server that has stopped answering. Runs for the life of the process
      * and does nothing until a tunnel is up and the setting is on.
      */
@@ -327,32 +266,6 @@ class AppContainer(context: Context) {
         onWriteFailure = writeFailure,
     )
 
-    /**
-     * New versions of the app itself. The user agent is the same one subscriptions use — GitHub
-     * refuses requests without one outright.
-     */
-    val updates = UpdateRepository(
-        context = context.applicationContext,
-        service = UpdateService(
-            userAgent = "Yumi/$versionName (Android ${android.os.Build.VERSION.RELEASE}; " +
-                "${android.os.Build.MODEL})",
-            strings = strings,
-            assetPrefix = if (appContext.packageName.startsWith("com.mydrop.vpn.tv")) "yumi-tv" else "yumi",
-        ),
-        settings = settings,
-        logs = logs,
-        alerts = alerts,
-        strings = strings,
-        currentVersion = versionName,
-        scope = applicationScope,
-    )
-
-    private val updateScheduler = UpdateScheduler(
-        settings = settings,
-        updates = updates,
-        scope = applicationScope,
-    )
-
     val subscriptionRefresher = SubscriptionRefresher(
         profiles = profiles,
         service = subscriptionService,
@@ -367,7 +280,7 @@ class AppContainer(context: Context) {
         refresher = subscriptionRefresher,
         logs = logs,
         scope = applicationScope,
-        refreshOnStart = isTelevision,
+        refreshOnStart = false,
     )
 
     /** Hands a running tunnel a new configuration when a setting it was built from changes. */
@@ -399,13 +312,11 @@ class AppContainer(context: Context) {
         reportWriteFailure = { error ->
             logs.error(R.string.log_store_write_failed, error.message ?: error::class.simpleName.orEmpty())
         }
-        remoteHost?.start()
         failoverWatchdog.start()
         ipv6Guard.start()
         staleSelectionPruner.start()
         tunnelSettingsApplier.start()
         subscriptionScheduler.start()
-        updateScheduler.start()
     }
 
     /** Whether the current connection is metered; see MainViewModel.speedTestIsMetered. */

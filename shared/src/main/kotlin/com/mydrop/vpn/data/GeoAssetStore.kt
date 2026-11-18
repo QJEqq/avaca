@@ -3,6 +3,7 @@ package com.mydrop.vpn.data
 import android.content.Context
 import com.mydrop.vpn.shared.R
 import com.mydrop.vpn.core.model.ProbeEndpoint
+import com.mydrop.vpn.core.xray.GeoCatalog
 import java.net.Authenticator
 import java.net.InetSocketAddress
 import java.net.PasswordAuthentication
@@ -99,6 +100,31 @@ class GeoAssetStore(
     fun available(): Boolean = ASSETS.all { asset ->
         File(directory, asset.fileName).let { it.isFile && it.length() >= MINIMUM_BYTES }
     }
+
+    /**
+     * The categories the files on disk hold, for checking references this app did not write — an
+     * operator's routing rules — before the core sees them. Null when the files are missing or do
+     * not read as databases. Read once per version of the files: a full scan of `geoip.dat` is a
+     * few hundred milliseconds that a reconnect should not pay again.
+     */
+    @Synchronized
+    fun catalog(): GeoCatalog? {
+        if (!available()) return null
+        val sites = File(directory, GEOSITE_FILE)
+        val ips = File(directory, GEOIP_FILE)
+        val stamp = listOf(sites.length(), sites.lastModified(), ips.length(), ips.lastModified())
+        cachedCatalog?.takeIf { it.first == stamp }?.let { return it.second }
+        val catalog = runCatching {
+            GeoCatalog(
+                sites = sites.inputStream().use(GeoCatalog::codes),
+                ips = ips.inputStream().use(GeoCatalog::codes),
+            )
+        }.getOrNull()
+        cachedCatalog = stamp to catalog
+        return catalog
+    }
+
+    private var cachedCatalog: Pair<List<Long>, GeoCatalog?>? = null
 
     /**
      * Fetches whatever is missing. Returns whether everything is present afterwards.
@@ -267,6 +293,9 @@ class GeoAssetStore(
          * list is published as; the core looks for it under the name `geosite.dat`, so it is
          * renamed on the way in rather than referenced by its published name.
          */
+        const val GEOIP_FILE = "geoip.dat"
+        const val GEOSITE_FILE = "geosite.dat"
+
         val ASSETS = listOf(
             Asset(
                 fileName = "geoip.dat",

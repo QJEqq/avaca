@@ -1,6 +1,7 @@
 package com.mydrop.vpn.core.xray
 
 import com.mydrop.vpn.core.model.AppSettings
+import com.mydrop.vpn.core.model.CustomRules
 import com.mydrop.vpn.core.model.LogLevel
 import com.mydrop.vpn.core.model.ProbeEndpoint
 import com.mydrop.vpn.core.model.ProxyNode
@@ -14,8 +15,11 @@ import com.mydrop.vpn.core.net.isNumericAddress
 import java.net.InetAddress
 import com.mydrop.vpn.core.net.splitHostPort
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonArrayBuilder
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -72,6 +76,7 @@ object XrayConfigFactory {
 
     const val DIRECT_TAG = "direct"
     const val BLOCK_TAG = "block"
+    const val FRAGMENT_TAG = "fragment"
     const val DNS_TAG = "dns-out"
     const val DNS_IN_TAG = "dns-in"
     const val TUN_TAG = "tun-in"
@@ -105,6 +110,12 @@ object XrayConfigFactory {
          * that, rather than leaving the user with a server that stopped working after an update.
          */
         val verificationForced: List<String>,
+        /** Rules of the operator's that made it into the document; see [OperatorDocument]. */
+        val operatorRules: Int = 0,
+        /** And the ones that could not: pointed at nothing here, or naming a category not on disk. */
+        val operatorRulesDropped: Int = 0,
+        /** Whether names are resolved by the operator's resolvers rather than this app's. */
+        val operatorDns: Boolean = false,
     )
 
     /**
@@ -197,6 +208,7 @@ object XrayConfigFactory {
         probe: ProbeEndpoint? = null,
         dnsOverride: String? = null,
         geoAvailable: Boolean = true,
+        geoCatalog: GeoCatalog? = null,
     ): Document {
         unsupported(selected)?.let {
             throw IllegalArgumentException("Xray cannot carry $it, which ${selected.name} needs")
@@ -205,11 +217,23 @@ object XrayConfigFactory {
         val usable = usable(nodes, selected)
         val dialed = members(nodes, selected)
         val resolved = settings.withDnsOverride(dnsOverride)
+        // The routing and resolvers of the document the selected server came from, if it came from
+        // one and the user has not turned that off. A geo reference survives only when the file on
+        // disk is known to hold it; see GeoCatalog for why an unknown one cannot be passed along.
+        val geo: (String) -> Boolean = { entry ->
+            !OperatorDocument.isGeoReference(entry) || (geoAvailable && geoCatalog?.resolves(entry) == true)
+        }
+        val plan = OperatorDocument.plan(
+            operator = if (settings.operatorRouting) selected.operator ?: selected.dialed().firstOrNull()?.operator else null,
+            settings = resolved,
+            useDns = dnsOverride.isNullOrBlank(),
+            geo = geo,
+        )
 
         return Document(
             json = json.encodeToString(
                 JsonObject.serializer(),
-                buildConfig(dialed, resolved, probe, geoAvailable),
+                buildConfig(dialed, resolved, probe, geoAvailable, plan, geo),
             ),
             pinnedTag = nodeTag(selected.dialed().first().id),
             // The servers, not their members: this is what the tunnel can be moved onto, and a
@@ -224,6 +248,9 @@ object XrayConfigFactory {
                         tls.pinnedCertSha256.isBlank() && tls.verifyPeerCertByName.isBlank()
                 }
                 .map { it.name },
+            operatorRules = plan?.rules?.size ?: 0,
+            operatorRulesDropped = plan?.dropped ?: 0,
+            operatorDns = plan?.dns != null,
         )
     }
 
@@ -263,6 +290,8 @@ object XrayConfigFactory {
         settings: AppSettings,
         probe: ProbeEndpoint?,
         geoAvailable: Boolean,
+        plan: OperatorDocument.Plan?,
+        geo: (String) -> Boolean,
     ): JsonObject = buildJsonObject {
         putJsonObject("log") { put("loglevel", settings.logLevel.toXrayLevel()) }
 
@@ -337,7 +366,7 @@ object XrayConfigFactory {
             }
         }
 
-        put("dns", buildDns(settings))
+        put("dns", plan?.dns ?: buildDns(settings))
 
         putJsonArray("inbounds") {
             add(buildTunInbound(settings))
@@ -345,7 +374,10 @@ object XrayConfigFactory {
         }
 
         putJsonArray("outbounds") {
-            nodes.forEach { add(buildOutbound(it)) }
+            nodes.forEach { node -> outboundsFor(node, settings).forEach { add(it) } }
+            // The hop every fragmenting server is dialled through; present only when some server
+            // in this config will use it, so an unused outbound never sits in the document.
+            if (settings.fragmentEnabled && nodes.any { it.canFragment() }) add(buildFragmentOutbound(settings))
             addJsonObject {
                 put("tag", DIRECT_TAG)
                 put("protocol", "freedom")
@@ -361,7 +393,7 @@ object XrayConfigFactory {
             }
         }
 
-        put("routing", buildRouting(settings, geoAvailable))
+        put("routing", buildRouting(settings, geoAvailable, plan, geo))
     }
 
     // ------------------------------------------------------------------ Inbounds
@@ -441,12 +473,147 @@ object XrayConfigFactory {
      * the core loads without complaint and then cannot resolve: the outbound exists, the tunnel
      * comes up, and nothing crosses it. The check for this is in `XrayConfigFactoryTest`.
      */
-    private fun buildOutbound(node: ProxyNode): JsonObject = buildJsonObject {
+    private fun buildOutbound(node: ProxyNode, settings: AppSettings): JsonObject = buildJsonObject {
         put("tag", nodeTag(node.id))
         put("protocol", node.settings.xrayProtocol())
         put("settings", node.settings.xraySettings(node))
-        buildStream(node)?.let { put("streamSettings", it) }
+        val fragment = settings.fragmentEnabled && node.canFragment()
+        buildStream(node)?.let { stream ->
+            put("streamSettings", if (fragment) stream.withDialerProxy(FRAGMENT_TAG) else stream)
+        }
+        if (settings.muxEnabled && node.canMux()) put("mux", buildMux(settings))
     }
+
+    private fun buildMux(settings: AppSettings): JsonObject = buildJsonObject {
+        put("enabled", true)
+        put("concurrency", settings.muxConcurrency.coerceIn(1, 1024))
+        put("xudpConcurrency", settings.muxXudpConcurrency.coerceIn(1, 1024))
+        // QUIC to port 443 over mux is mostly YouTube's, and it is better refused — the browser
+        // falls back to TCP at once — than carried slowly inside one connection.
+        put("xudpProxyUDP443", "reject")
+    }
+
+    /**
+     * The outbounds a server puts into the document: the operator's own when it came from an Xray
+     * document (see [OperatorDocument]), with the hops it is dialled through; otherwise the one
+     * built here from the typed model.
+     */
+    private fun outboundsFor(node: ProxyNode, settings: AppSettings): List<JsonObject> {
+        val written = node.operator?.let { OperatorDocument.outbounds(node, it) }
+            ?: return listOf(buildOutbound(node, settings))
+        return listOf(written.first().withAppExtras(node, settings)) + written.drop(1)
+    }
+
+    /**
+     * This app's mux and fragmentation on an operator's outbound — only where the operator set
+     * neither: a `mux` of theirs, or a hop of theirs to dial through, is the operator's decision.
+     */
+    private fun JsonObject.withAppExtras(node: ProxyNode, settings: AppSettings): JsonObject {
+        var result = this
+        if (settings.muxEnabled && node.canMux() && result["mux"] == null) {
+            result = JsonObject(result + ("mux" to buildMux(settings)))
+        }
+        val stream = result["streamSettings"] as? JsonObject
+        val dialsThrough = (stream?.get("sockopt") as? JsonObject)?.get("dialerProxy") != null ||
+            result["proxySettings"] != null
+        if (settings.fragmentEnabled && node.canFragment() && stream != null && !dialsThrough) {
+            result = JsonObject(result + ("streamSettings" to stream.withDialerProxy(FRAGMENT_TAG)))
+        }
+        return result
+    }
+
+    /**
+     * A document of server outbounds alone — no inbound, no tunnel, no routing — for timing servers
+     * on a core of their own (`ProbeConfig` in the binding): a real request through each server,
+     * whether or not the tunnel is up and whichever servers it holds. Null when none of [nodes] can
+     * be dialled here. OpenFlux nodes are left out: their SOCKS hop leads to an engine that only
+     * runs while the tunnel does.
+     */
+    fun buildProbe(nodes: List<ProxyNode>, settings: AppSettings): String? {
+        val dialed = nodes.flatMap { it.dialed() }
+            .filter { unsupported(it) == null && it.settings !is ProxySettings.Openflux }
+            .distinctBy { it.id }
+        if (dialed.isEmpty()) return null
+        val document = buildJsonObject {
+            putJsonObject("log") { put("loglevel", "none") }
+            putJsonArray("outbounds") {
+                dialed.forEach { node -> outboundsFor(node, settings).forEach { add(it) } }
+                if (settings.fragmentEnabled && dialed.any { it.canFragment() }) add(buildFragmentOutbound(settings))
+            }
+        }
+        return json.encodeToString(JsonObject.serializer(), document)
+    }
+
+    // ------------------------------------------------------------------ Mux and fragmentation
+
+    /**
+     * Whether Xray's mux can ride this server: one of the four protocols whose other end speaks
+     * mux.cool, and not with XTLS Vision (the core refuses the pair), XHTTP (it multiplexes by
+     * itself) or QUIC. An OpenFlux node is a SOCKS hop to the local engine, which knows no mux.
+     */
+    internal fun ProxyNode.canMux(): Boolean {
+        val vision = (settings as? ProxySettings.Vless)?.flow?.contains("vision", ignoreCase = true) == true
+        return speaksProxy() && !vision && transport !is TransportOptions.Xhttp && transport !is TransportOptions.Quic
+    }
+
+    /**
+     * Whether splitting the TLS ClientHello means anything here: TLS or REALITY over TCP from one of
+     * the proxy protocols. QUIC-based protocols and WireGuard send no ClientHello over TCP, and an
+     * OpenFlux node is a local hop.
+     */
+    /**
+     * Whether the core will cut this server's TLS ClientHello into pieces — through the operator's
+     * `finalmask` or a fragmenting hop, the link's `fm`, or this app's own setting. What a check
+     * made outside the core (ServerDiagnostics) has to admit it did not do.
+     */
+    fun fragmentsHandshake(node: ProxyNode, settings: AppSettings): Boolean {
+        val target = node.dialed().firstOrNull() ?: node
+        if (settings.fragmentEnabled && target.canFragment()) return true
+        if (OperatorDocument.parseObject(target.finalMask).hasTcpFragment()) return true
+        val operator = target.operator ?: return false
+        val stream = OperatorDocument.parseObject(operator.outbound)?.get("streamSettings") as? JsonObject
+        if ((stream?.get("finalmask") as? JsonObject).hasTcpFragment()) return true
+        return operator.chain.any { hop ->
+            (OperatorDocument.parseObject(hop)?.get("settings") as? JsonObject)?.get("fragment") != null
+        }
+    }
+
+    private fun JsonObject?.hasTcpFragment(): Boolean =
+        (this?.get("tcp") as? JsonArray)?.any { mask ->
+            ((mask as? JsonObject)?.get("type") as? JsonPrimitive)?.content.equals("fragment", ignoreCase = true)
+        } == true
+
+    internal fun ProxyNode.canFragment(): Boolean =
+        speaksProxy() && tls?.enabled == true && transport !is TransportOptions.Quic
+
+    private fun ProxyNode.speaksProxy(): Boolean =
+        settings is ProxySettings.Vless || settings is ProxySettings.Vmess ||
+            settings is ProxySettings.Trojan || settings is ProxySettings.Shadowsocks
+
+    /** The same stream settings, dialled through the outbound tagged [tag]. */
+    private fun JsonObject.withDialerProxy(tag: String): JsonObject {
+        val sockopt = (this["sockopt"] as? JsonObject).orEmpty() + ("dialerProxy" to JsonPrimitive(tag))
+        return JsonObject(this + ("sockopt" to JsonObject(sockopt)))
+    }
+
+    /**
+     * A freedom outbound that splits what passes through it. Values that do not parse fall back to
+     * the defaults rather than reaching the core, which would refuse the whole config over them.
+     */
+    private fun buildFragmentOutbound(settings: AppSettings): JsonObject = buildJsonObject {
+        put("tag", FRAGMENT_TAG)
+        put("protocol", "freedom")
+        putJsonObject("settings") {
+            putJsonObject("fragment") {
+                val packets = settings.fragmentPackets.trim().lowercase()
+                put("packets", if (packets == "tlshello" || FRAGMENT_RANGE.matches(packets)) packets else "tlshello")
+                put("length", settings.fragmentLength.trim().takeIf { FRAGMENT_RANGE.matches(it) } ?: "100-200")
+                put("interval", settings.fragmentInterval.trim().takeIf { FRAGMENT_RANGE.matches(it) } ?: "10-20")
+            }
+        }
+    }
+
+    private val FRAGMENT_RANGE = Regex("""\d{1,5}(-\d{1,5})?""")
 
     private fun ProxySettings.xrayProtocol(): String = when (this) {
         is ProxySettings.Vless -> "vless"
@@ -669,10 +836,36 @@ object XrayConfigFactory {
                     // The credential, and the only place the core looks for it.
                     put("auth", hysteria.password)
                 }
-                buildFinalMask(hysteria)?.let { put("finalmask", it) }
             }
+            finalMaskOf(node, hysteria)?.let { put("finalmask", it) }
         }
     }
+
+    /**
+     * The final mask for [node]: what its link wrote under `fm`, over what this app derives from
+     * Hysteria2's own parameters. The link wins key by key, except where it wrote an empty list or
+     * object — `"udp": []` beside `obfs=salamander` means "nothing more", not "drop the obfuscation".
+     * QUIC parameters are merged one level down, so a link that names only the congestion control
+     * keeps the bandwidth its own `up`/`down` set.
+     */
+    private fun finalMaskOf(node: ProxyNode, hysteria: ProxySettings.Hysteria2?): JsonObject? {
+        val built = hysteria?.let(::buildFinalMask)
+        val written = OperatorDocument.parseObject(node.finalMask) ?: return built
+        if (built == null) return written
+        val merged = LinkedHashMap<String, JsonElement>(built)
+        written.forEach { (key, value) ->
+            val ours = built[key]
+            merged[key] = when {
+                value.isEmptyContainer() && ours != null && !ours.isEmptyContainer() -> ours
+                key == "quicParams" && value is JsonObject && ours is JsonObject -> JsonObject(ours + value)
+                else -> value
+            }
+        }
+        return JsonObject(merged)
+    }
+
+    private fun JsonElement.isEmptyContainer(): Boolean =
+        (this is JsonArray && isEmpty()) || (this is JsonObject && isEmpty())
 
     /**
      * The obfuscator and the congestion controller, which Xray keeps outside the protocol.
@@ -789,6 +982,9 @@ object XrayConfigFactory {
                     transport.headers.forEach { (name, value) -> put(name, value) }
                 }
             }
+            // The rest of what the operator set, which the server expects to the letter; see
+            // TransportOptions.Xhttp.extra.
+            OperatorDocument.parseObject(transport.extra)?.let { put("extra", it) }
         }
 
         else -> null
@@ -1082,7 +1278,12 @@ object XrayConfigFactory {
 
     // ------------------------------------------------------------------ Routing
 
-    private fun buildRouting(settings: AppSettings, geoAvailable: Boolean): JsonObject =
+    private fun buildRouting(
+        settings: AppSettings,
+        geoAvailable: Boolean,
+        plan: OperatorDocument.Plan?,
+        geo: (String) -> Boolean,
+    ): JsonObject =
         buildJsonObject {
             put("domainStrategy", "IPIfNonMatch")
 
@@ -1097,7 +1298,10 @@ object XrayConfigFactory {
             }
 
             putJsonArray("rules") {
-                dnsRules(settings)
+                // The core's own lookups first, before anything below can claim port 53 for them.
+                // With the operator's resolvers in charge there is no resolver of this app's to
+                // treat specially: their queries ride the tunnel, as in the document they came from.
+                if (plan?.dns != null) operatorDnsRules(settings) else dnsRules(settings)
 
                 // Unconditional, and that is the difference between a setting and a trapdoor.
                 //
@@ -1177,6 +1381,10 @@ object XrayConfigFactory {
                     put("balancerTag", BALANCER_TAG)
                 }
 
+                // The user's own rules: after what the tunnel needs to work at all, before
+                // everything that is a default — switches, the operator's rules, the mode.
+                customRules(settings.customRules, geo)
+
                 if (settings.blockQuic) {
                     addJsonObject {
                         put("type", "field")
@@ -1206,6 +1414,10 @@ object XrayConfigFactory {
                     }
                 }
 
+                // The operator's rules, after the switches the user set here and before this app's
+                // defaults, which they replace when the document had any (see below).
+                plan?.rules?.forEach { add(it) }
+
                 when (settings.routingMode) {
                     RoutingMode.Global -> Unit
                     RoutingMode.Direct -> addJsonObject {
@@ -1216,7 +1428,9 @@ object XrayConfigFactory {
                     // Without the databases this is the same as Global: everything goes through the
                     // proxy. Saying so by omission rather than by an unresolvable rule is the whole
                     // point — the alternative is a configuration the core refuses to load.
-                    RoutingMode.Rules -> if (geoAvailable) {
+                    // An operator who wrote rules decided what goes direct, as they do in Happ;
+                    // adding "Russian sites direct" on top would second-guess them.
+                    RoutingMode.Rules -> if (geoAvailable && plan?.hasRouting != true) {
                         // Before the country rules, by name, so the address is never asked about;
                         // see [PROXIED_DESPITE_RU_ADDRESS].
                         addJsonObject {
@@ -1268,6 +1482,48 @@ object XrayConfigFactory {
      * (`app/dns/nameserver.go:56-62`), so a user who picks the local form opts out of 3 by choosing
      * it, and no rule here can or should override that.
      */
+    /**
+     * The core's lookups when the resolvers are the operator's: all of them through the tunnel,
+     * which is where an Xray document without rules for them sends them too. Direct when the user
+     * asked for no tunnel at all.
+     */
+    /**
+     * [rules] as routing rules: blocking first, then the tunnel, then direct — so that an entry
+     * the user sent through the tunnel is not let out by a broader one they sent direct. Names and
+     * addresses go in separate rules, as the core matches them separately. An entry the core would
+     * refuse the whole document over — a category not on disk, a pattern that does not compile —
+     * is left out rather than allowed to stop the tunnel.
+     */
+    private fun JsonArrayBuilder.customRules(rules: CustomRules, geo: (String) -> Boolean) {
+        if (rules.isEmpty) return
+        for (action in listOf(CustomRules.Action.Block, CustomRules.Action.Proxy, CustomRules.Action.Direct)) {
+            val usable = rules.of(action).filter { entry ->
+                geo(entry) && (!entry.startsWith("regexp:") || runCatching { Regex(entry.removePrefix("regexp:")) }.isSuccess)
+            }
+            val (addresses, names) = usable.partition(CustomRules::isAddress)
+            for ((key, entries) in listOf("domain" to names, "ip" to addresses)) {
+                if (entries.isEmpty()) continue
+                addJsonObject {
+                    put("type", "field")
+                    putJsonArray(key) { entries.forEach { add(it) } }
+                    when (action) {
+                        CustomRules.Action.Block -> put("outboundTag", BLOCK_TAG)
+                        CustomRules.Action.Direct -> put("outboundTag", DIRECT_TAG)
+                        CustomRules.Action.Proxy -> put("balancerTag", BALANCER_TAG)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun JsonArrayBuilder.operatorDnsRules(settings: AppSettings) {
+        addJsonObject {
+            put("type", "field")
+            putJsonArray("inboundTag") { add(DNS_IN_TAG) }
+            if (settings.routingMode == RoutingMode.Direct) put("outboundTag", DIRECT_TAG) else put("balancerTag", BALANCER_TAG)
+        }
+    }
+
     private fun JsonArrayBuilder.dnsRules(settings: AppSettings) {
         val directHost = xrayResolver(settings.directDns)?.let(::hostOf)
         if (directHost != null) {

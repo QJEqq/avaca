@@ -53,7 +53,7 @@ object DeepLinkParser {
         val scheme = text.substringBefore("://", missingDelimiterValue = "").lowercase()
 
         return when (scheme) {
-            "happ", "mydrop" -> parseAppLink(text, scheme)
+            "happ", "avaca", "mydrop" -> parseAppLink(text, scheme)
             // A DoH link and a subscription link are both https; only the resolver has the
             // well-known path, so asking the DNS parser first cannot swallow a subscription.
             "http", "https" -> DnsUriParser.parse(text)

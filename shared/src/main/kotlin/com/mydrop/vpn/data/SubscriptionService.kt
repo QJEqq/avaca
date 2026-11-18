@@ -2,6 +2,7 @@ package com.mydrop.vpn.data
 
 import com.mydrop.vpn.shared.R
 import com.mydrop.vpn.core.model.ProxyNode
+import com.mydrop.vpn.core.model.ProviderSettings
 import com.mydrop.vpn.core.model.Subscription
 import com.mydrop.vpn.core.model.SubscriptionUpdate
 import com.mydrop.vpn.core.parse.SubscriptionBody
@@ -55,7 +56,7 @@ data class DeviceIdentity(
 class SubscriptionService(
     private val logs: LogRepository,
     private val strings: Strings,
-    private val userAgent: String = "Yumi/0.2.0 (Android)",
+    private val userAgent: String = "Avaca (Android)",
     private val identity: () -> DeviceIdentity? = { null },
     /**
      * How to reach the running tunnel from inside this process, or null when there is none.
@@ -110,7 +111,7 @@ class SubscriptionService(
         // So a refusal is retried through the loopback inbound the tunnel already publishes. Only
         // on failure — the direct road is faster, needs no tunnel, and keeps working when the
         // provider is reachable and the proxy is not.
-        val response = fetch(subscription.url, subscription)
+        val response = fetchWithFallback(subscription)
 
         if (response.code !in 200..299) {
             return SubscriptionUpdate.Failure(
@@ -133,7 +134,7 @@ class SubscriptionService(
                         logs.warn(R.string.log_subscription_message, subscription.name, it.name)
                     }
                     android.util.Log.w(
-                        "YumiSub",
+                        "AvacaSub",
                         "panel refused: hwidHeaders=${response.hwidRequired} — " +
                             body.nodes.joinToString(" | ") { it.name },
                     )
@@ -197,6 +198,12 @@ class SubscriptionService(
                             ?: subscription.userInfo,
                         remoteTitle = response.profileTitle ?: subscription.remoteTitle,
                         webPageUrl = response.webPageUrl ?: subscription.webPageUrl,
+                        announce = response.announce,
+                        supportUrl = response.supportUrl ?: subscription.supportUrl,
+                        provider = ProviderSettings.fromHeaders(response.providerHeaders),
+                        fallbackUrl = response.providerHeaders["fallback-url"]?.takeIf(::isWebUrl)
+                            ?: subscription.fallbackUrl,
+                        url = movedUrl(subscription.url, response.providerHeaders),
                         lastUpdatedEpochMillis = System.currentTimeMillis(),
                         lastError = null,
                     ),
@@ -245,7 +252,7 @@ class SubscriptionService(
      * group, a request that fails, or an answer that is not documents changes nothing.
      */
     private fun autoSelectVariant(subscription: Subscription, links: List<ProxyNode>): List<ProxyNode>? {
-        if (links.any { it.group != null }) return null
+        if (links.any { it.group != null || it.operator != null }) return null
         val url = runCatching { URL(subscription.url) }.getOrNull() ?: return null
 
         val variants = buildList {
@@ -261,27 +268,55 @@ class SubscriptionService(
             val response = runCatching { fetch(variantUrl, asking) }.getOrNull()
             val body = response?.takeIf { it.code in 200..299 }
                 ?.let { SubscriptionParser.parse(it.body, subscription.id) }
-            val groups = (body as? SubscriptionBody.Nodes)?.nodes.orEmpty().filter { it.group != null }
+            val documents = (body as? SubscriptionBody.Nodes)?.nodes.orEmpty()
+            val groups = documents.filter { it.group != null }
+            // Every server the documents spell out in full, for its link to run on: the operator's
+            // own outbound, rules and resolvers instead of what a share link could carry.
+            val written = documents.filter { it.group == null && it.operator != null }
             logs.trace(
-                "YumiSub",
+                "AvacaSub",
                 "${subscription.name}: documents by $how: " + when {
                     response == null -> "no answer"
                     response.code !in 200..299 -> "HTTP ${response.code}"
                     body !is SubscriptionBody.Nodes -> "not a server list"
-                    else -> "${body.nodes.size} servers, ${groups.size} auto-select"
+                    else -> "${body.nodes.size} servers, ${groups.size} auto-select, " +
+                        "${links.count { link -> written.any { it.sameServerAs(link) } }} with the operator's settings"
                 },
             )
-            if (groups.isNotEmpty()) return withGroups(links, groups)
+            val merged = withDocuments(links, groups, written)
+            if (merged != links) return merged
         }
         return null
     }
 
-    /** [links] with each of [groups] in the place of the link named after it; see [autoSelectVariant]. */
-    private fun withGroups(links: List<ProxyNode>, groups: List<ProxyNode>): List<ProxyNode> {
-        val byName = groups.associateBy { it.name }
+    /**
+     * [links] with each of [groups] in the place of the link named after it, and every other link
+     * carrying the operator's settings from the document server of the same name and address; see
+     * [autoSelectVariant].
+     *
+     * The link stays the row — its id, its place, the selection made on it — and only gains what
+     * the document knew. A link the documents do not describe is left exactly as it was, so a
+     * server written in a form the document parser cannot read keeps working from its link.
+     */
+    private fun withDocuments(
+        links: List<ProxyNode>,
+        groups: List<ProxyNode>,
+        written: List<ProxyNode>,
+    ): List<ProxyNode> {
+        val groupByName = groups.associateBy { it.name }
+        val writtenByName = written.groupBy { it.name }
         val names = links.mapTo(HashSet()) { it.name }
-        return links.map { link -> byName[link.name] ?: link } + groups.filter { it.name !in names }
+        return links.map { link ->
+            groupByName[link.name]
+                ?: writtenByName[link.name]?.firstOrNull { it.sameServerAs(link) }
+                    ?.let { document -> link.copy(operator = document.operator) }
+                ?: link
+        } + groups.filter { it.name !in names }
     }
+
+    /** The same endpoint spoken to the same way: the test for a document describing a link. */
+    private fun ProxyNode.sameServerAs(other: ProxyNode): Boolean =
+        server.equals(other.server, ignoreCase = true) && port == other.port && protocol == other.protocol
 
     private data class Response(
         val code: Int,
@@ -289,6 +324,10 @@ class SubscriptionService(
         val userInfoHeader: String?,
         val profileTitle: String?,
         val webPageUrl: String?,
+        val announce: String? = null,
+        val supportUrl: String? = null,
+        /** The provider's app-management headers, by lower-cased name; see [PROVIDER_HEADERS]. */
+        val providerHeaders: Map<String, String> = emptyMap(),
         /** The panel announced device binding through one of its `x-hwid-*` headers. */
         val hwidRequired: Boolean = false,
         /** It also said the account has no free device slots left. */
@@ -471,6 +510,16 @@ class SubscriptionService(
                     profileTitle = connection.getHeaderField("profile-title")
                         ?.let(::decodeProfileTitle),
                     webPageUrl = connection.getHeaderField("profile-web-page-url"),
+                    announce = connection.getHeaderField("announce")
+                        ?.let(::decodeProfileTitle)
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() },
+                    supportUrl = connection.getHeaderField("support-url")
+                        ?.trim()
+                        ?.takeIf { it.startsWith("https://") || it.startsWith("http://") || it.startsWith("tg://") },
+                    providerHeaders = PROVIDER_HEADERS.mapNotNull { name ->
+                        connection.getHeaderField(name)?.trim()?.takeIf { it.isNotEmpty() }?.let { name to it }
+                    }.toMap(),
                     hwidRequired = connection.getHeaderField("x-hwid-active") != null ||
                         connection.getHeaderField("x-hwid-not-supported") != null,
                     deviceLimitReached =
@@ -504,10 +553,53 @@ class SubscriptionService(
         return out.toByteArray()
     }
 
-    /** `profile-title` is often sent as `base64:<...>` to survive non-ASCII provider names. */
+    /**
+     * The subscription's own address first; when that fails or answers with an error, the provider's
+     * fallback (`fallback-url`), if it ever sent one. A blocked subscription domain otherwise leaves
+     * every user on the servers they had the day it was blocked. The first failure is the one
+     * reported when both fail: it is the address the user knows.
+     */
+    private fun fetchWithFallback(subscription: Subscription): Response {
+        val primary = runCatching { fetch(subscription.url, subscription) }
+        primary.getOrNull()?.takeIf { it.code in 200..299 }?.let { return it }
+        val fallback = subscription.fallbackUrl?.takeIf { it != subscription.url } ?: return primary.getOrThrow()
+        logs.warn(R.string.log_subscription_fallback, subscription.name)
+        runCatching { fetch(fallback, subscription) }.getOrNull()?.takeIf { it.code in 200..299 }?.let { return it }
+        return primary.getOrThrow()
+    }
+
+    /**
+     * Where the subscription lives from now on: `new-url` moves it whole, `new-domain` moves only its
+     * host. Only to https, so a header cannot quietly downgrade the user to plain HTTP.
+     */
+    private fun movedUrl(current: String, headers: Map<String, String>): String {
+        headers["new-url"]?.takeIf { it.startsWith("https://") && it != current }?.let { return it }
+        val domain = headers["new-domain"]?.trim()?.lowercase()
+            ?.takeIf { Regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$").matches(it) }
+            ?: return current
+        return runCatching {
+            val uri = java.net.URI(current)
+            if (uri.host == domain) return current
+            java.net.URI("https", uri.userInfo, domain, uri.port, uri.path, uri.query, uri.fragment).toString()
+        }.getOrDefault(current)
+    }
+
+    private fun isWebUrl(url: String): Boolean = url.startsWith("https://") || url.startsWith("http://")
+
+    /** `profile-title` and `announce` are often sent as `base64:<...>` to survive non-ASCII text. */
     private fun decodeProfileTitle(raw: String): String {
         val prefix = "base64:"
         if (!raw.startsWith(prefix)) return raw
         return com.mydrop.vpn.core.parse.base64DecodeOrNull(raw.removePrefix(prefix)) ?: raw
     }
 }
+
+/** The app-management headers Avaca reads, by Happ's names (lower case, as HttpURLConnection matches them). */
+private val PROVIDER_HEADERS = listOf(
+    "fragmentation-enable", "fragmentation-packets", "fragmentation-length", "fragmentation-interval",
+    "mux-enable", "mux-tcp-connections", "mux-xudp-connections",
+    "ping-type",
+    "server-address-resolve-enable", "server-address-resolve-dns-domain", "server-address-resolve-dns-ip",
+    "profile-update-interval",
+    "fallback-url", "new-url", "new-domain",
+)

@@ -181,7 +181,7 @@ class Ipv6Guard(
     }
 
     private companion object {
-        const val TAG = "YumiIpv6"
+        const val TAG = "AvacaIpv6"
 
         /** Well inside the watchdog's fifteen-second grace, and long enough for a first dial. */
         const val SETTLE_MILLIS = 3_000L

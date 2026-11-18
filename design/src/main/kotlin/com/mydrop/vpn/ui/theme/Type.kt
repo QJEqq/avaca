@@ -24,8 +24,6 @@ import com.mydrop.vpn.shared.R
  * runtime variable-font API is involved.
  */
 
-private val Display = FontFamily(Font(R.font.roboto_flex_display, FontWeight.Black))
-
 private val Ui = FontFamily(
     Font(R.font.roboto_flex_regular, FontWeight.Normal),
     Font(R.font.roboto_flex_medium, FontWeight.Medium),
@@ -43,21 +41,6 @@ val MonoFamily = FontFamily(Font(R.font.roboto_mono_medium, FontWeight.Medium))
 @Suppress("DEPRECATION")
 private val TightPlatform = PlatformTextStyle(includeFontPadding = false)
 
-private val TrimBoth = LineHeightStyle(
-    alignment = LineHeightStyle.Alignment.Center,
-    trim = LineHeightStyle.Trim.Both,
-)
-
-private fun poster(size: Int, tracking: Float = -0.04f) = TextStyle(
-    fontFamily = Display,
-    fontWeight = FontWeight.Black,
-    fontSize = size.sp,
-    lineHeight = (size * 0.86f).sp,
-    letterSpacing = tracking.em,
-    platformStyle = TightPlatform,
-    lineHeightStyle = TrimBoth,
-)
-
 private fun ui(
     size: Int,
     weight: FontWeight = FontWeight.Normal,
@@ -73,19 +56,20 @@ private fun ui(
 )
 
 val MyDropTypography = Typography(
-    // Screen headlines. displayLarge is the tunnel screen's state word; the smaller steps carry
-    // the same voice onto screens whose titles are longer.
-    displayLarge = poster(52),
-    displayMedium = poster(44),
-    displaySmall = poster(38),
+    // Avaca sets everything in the UI face, headlines included, at Medium at most. The poster face
+    // (Roboto Flex at wght 880) read as shouting on a calm graphite screen — most of all in
+    // settings, where every section title was one.
+    displayLarge = ui(40, FontWeight.Medium, lineHeight = 1.15f, tracking = -0.01f),
+    displayMedium = ui(34, FontWeight.Medium, lineHeight = 1.15f, tracking = -0.01f),
+    displaySmall = ui(28, FontWeight.Medium, lineHeight = 1.2f, tracking = -0.005f),
 
-    headlineLarge = poster(32, tracking = -0.03f),
-    headlineMedium = poster(28, tracking = -0.03f),
-    headlineSmall = poster(24, tracking = -0.025f),
+    headlineLarge = ui(26, FontWeight.Medium, lineHeight = 1.2f),
+    headlineMedium = ui(22, FontWeight.Medium, lineHeight = 1.25f),
+    headlineSmall = ui(20, FontWeight.Medium, lineHeight = 1.25f),
 
-    titleLarge = ui(20, FontWeight.SemiBold, lineHeight = 1.3f),
-    titleMedium = ui(16, FontWeight.SemiBold, lineHeight = 1.35f),
-    titleSmall = ui(14, FontWeight.SemiBold, lineHeight = 1.35f),
+    titleLarge = ui(19, FontWeight.Medium, lineHeight = 1.3f),
+    titleMedium = ui(16, FontWeight.Medium, lineHeight = 1.35f),
+    titleSmall = ui(14, FontWeight.Medium, lineHeight = 1.35f),
 
     bodyLarge = ui(16),
     bodyMedium = ui(14),

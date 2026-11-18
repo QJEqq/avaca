@@ -58,6 +58,10 @@ class TunnelSettingsApplier(
         val remoteDns: String,
         val directDns: String,
         val hijackDns: Boolean,
+        val mux: String,
+        val fragment: String,
+        val operatorRouting: Boolean,
+        val customRules: com.mydrop.vpn.core.model.CustomRules,
     )
 
     private fun AppSettings.baked() = Baked(
@@ -71,6 +75,10 @@ class TunnelSettingsApplier(
         remoteDns = remoteDns,
         directDns = directDns,
         hijackDns = hijackDns,
+        mux = if (muxEnabled) "$muxConcurrency/$muxXudpConcurrency" else "",
+        fragment = if (fragmentEnabled) "$fragmentPackets/$fragmentLength/$fragmentInterval" else "",
+        operatorRouting = operatorRouting,
+        customRules = customRules,
     )
 
     fun start() {

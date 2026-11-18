@@ -18,7 +18,7 @@ import org.junit.Test
  */
 class RealProfileMigrationCheck {
 
-    private val profile = File(System.getProperty("yumi.realProfile") ?: "")
+    private val profile = File(System.getProperty("avaca.realProfile") ?: "")
 
     @Test
     fun `the migration over a real profile moves every server and merges none`() {

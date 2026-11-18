@@ -1,6 +1,7 @@
 package com.mydrop.vpn.core.parse
 
 import com.mydrop.vpn.core.model.NodeGroup
+import com.mydrop.vpn.core.model.OperatorConfig
 import com.mydrop.vpn.core.model.ProxyNode
 import com.mydrop.vpn.core.model.identified
 import com.mydrop.vpn.core.model.ProxySettings
@@ -50,11 +51,24 @@ object ConfigDocumentParser {
             // Either a list of whole configs, or a bare list of outbounds — and the second was
             // being lost entirely. Every element was treated as a document, `fromDocument` found no
             // `outbounds` key in it, and a subscription of forty servers imported as none at all.
-            root is JsonArray -> root.mapNotNull { it as? JsonObject }.flatMap { element ->
-                if (element["outbounds"] != null || element["servers"] != null) {
-                    fromDocument(element, subscriptionId)
-                } else {
-                    listOfNotNull(fromOutbound(element, null, subscriptionId))
+            root is JsonArray -> root.flatMap { item ->
+                when (item) {
+                    // A share link among the documents: Supwave puts the OpenFlux one there,
+                    // because a line after the JSON — where it goes in a list of links — breaks
+                    // the whole document.
+                    is JsonPrimitive -> listOfNotNull(
+                        item.takeIf { it.isString }?.let { ProxyUriParser.parse(it.content.trim(), subscriptionId) },
+                    )
+                    is JsonObject -> if (item["outbounds"] != null || item["servers"] != null) {
+                        fromDocument(item, subscriptionId)
+                    } else {
+                        listOfNotNull(
+                            fromOutbound(item, null, subscriptionId)?.let { node ->
+                                if (item.isXrayOutbound()) node.copy(operator = OperatorConfig(item.toString())) else node
+                            },
+                        )
+                    }
+                    else -> emptyList()
                 }
             }
             root is JsonObject -> fromDocument(root, subscriptionId)
@@ -76,10 +90,32 @@ object ConfigDocumentParser {
         val outbounds = document["outbounds"] as? JsonArray ?: return emptyList()
         val label = document.str("remarks")
 
+        // The operator's own settings ride along with every server the document yields, and the
+        // core is handed those rather than a translation of them; see OperatorConfig.
+        val byTag = outbounds.mapNotNull { it as? JsonObject }
+            .mapNotNull { outbound -> outbound.str("tag")?.takeIf(String::isNotBlank)?.let { it to outbound } }
+            .toMap()
+        val routing = (document["routing"] as? JsonObject)?.toString()
+        val dns = (document["dns"] as? JsonObject)?.toString()
+        val roles = rolesOf(document)
+
         val tagged = outbounds.mapNotNull { element ->
             val outbound = element as? JsonObject ?: return@mapNotNull null
             val node = fromOutbound(outbound, label, subscriptionId) ?: return@mapNotNull null
-            outbound.str("tag").orEmpty() to node
+            val kept = if (outbound.isXrayOutbound()) {
+                node.copy(
+                    operator = OperatorConfig(
+                        outbound = outbound.toString(),
+                        chain = chainOf(outbound, byTag).map(JsonObject::toString),
+                        routing = routing,
+                        dns = dns,
+                        roles = roles,
+                    ),
+                )
+            } else {
+                node
+            }
+            outbound.str("tag").orEmpty() to kept
         }
         autoSelect(document, tagged, label)?.let { return listOf(it) }
         return tagged.map { it.second }
@@ -232,6 +268,7 @@ object ConfigDocumentParser {
     private fun fromXray(outbound: JsonObject, label: String?, subscriptionId: String?): ProxyNode? {
         val protocol = outbound.str("protocol")?.lowercase() ?: return null
         if (protocol in plumbingTypes) return null
+        if (protocol == "hysteria") return fromXrayHysteria(outbound, label, subscriptionId)
 
         val settingsObject = outbound["settings"]?.jsonObject ?: return null
         val vnext = (settingsObject["vnext"] as? JsonArray)?.firstOrNull()?.jsonObject
@@ -285,6 +322,41 @@ object ConfigDocumentParser {
             settings = proxySettings,
             tls = stream?.let(::xrayTls),
             transport = stream?.let(::xrayTransport),
+            subscriptionId = subscriptionId,
+        ).identified()
+    }
+
+    /**
+     * Xray's Hysteria2, which it calls `hysteria` with `version: 2`: the endpoint flat under
+     * `settings` rather than in `vnext`/`servers`, the password in `streamSettings.hysteriaSettings`
+     * and the obfuscation in `finalmask`.
+     *
+     * Read so that a Hysteria2 server gets its operator's document like any other — until this, it
+     * was the one kind of server a panel's documents described and this app could only take from a
+     * share link, which drops what the link format has no room for.
+     */
+    private fun fromXrayHysteria(outbound: JsonObject, label: String?, subscriptionId: String?): ProxyNode? {
+        val settings = outbound["settings"] as? JsonObject ?: return null
+        val version = (settings["version"] as? JsonPrimitive)?.intOrNull
+        if (version != null && version != 2) return null
+        val server = settings.str("address") ?: return null
+        val port = settings.port("port") ?: return null
+        val stream = outbound["streamSettings"] as? JsonObject ?: return null
+        val auth = (stream["hysteriaSettings"] as? JsonObject)?.str("auth") ?: return null
+        val salamander = ((stream["finalmask"] as? JsonObject)?.get("udp") as? JsonArray)
+            ?.mapNotNull { it as? JsonObject }
+            ?.firstOrNull { it.str("type").equals("salamander", ignoreCase = true) }
+        return ProxyNode(
+            id = "",
+            name = label?.takeIf { it.isNotBlank() } ?: outbound.str("tag") ?: "$server:$port",
+            server = server,
+            port = port,
+            settings = ProxySettings.Hysteria2(
+                password = auth,
+                obfsType = if (salamander != null) "salamander" else "",
+                obfsPassword = (salamander?.get("settings") as? JsonObject)?.str("password").orEmpty(),
+            ),
+            tls = xrayTls(stream),
             subscriptionId = subscriptionId,
         ).identified()
     }
@@ -369,6 +441,7 @@ object ConfigDocumentParser {
                     path = xhttp?.str("path") ?: "/",
                     host = xhttp?.str("host").orEmpty(),
                     mode = xhttp?.str("mode") ?: "auto",
+                    extra = xhttp?.let(::xhttpExtraOf),
                 )
             }
 
@@ -379,6 +452,71 @@ object ConfigDocumentParser {
             // carried nothing. The accepted set and the branches below it have to agree.
             else -> null
         }
+
+    /**
+     * What the core reads under `extra`: the document's own object when it has one — the core then
+     * ignores everything else but host, path and mode — and otherwise the rest of the settings,
+     * which mean the same thing written one level up.
+     */
+    private fun xhttpExtraOf(settings: JsonObject): String? {
+        (settings["extra"] as? JsonObject)?.let { extra -> return extra.takeIf { it.isNotEmpty() }?.toString() }
+        val rest = JsonObject(settings.filterKeys { it !in XHTTP_MODELLED })
+        return rest.takeIf { it.isNotEmpty() }?.toString()
+    }
+
+    private val XHTTP_MODELLED = setOf("host", "path", "mode", "extra")
+
+    private fun JsonObject.isXrayOutbound(): Boolean = this["protocol"] != null && this["settings"] != null
+
+    /**
+     * The outbounds [outbound] is dialled through, nearest first: whatever its
+     * `streamSettings.sockopt.dialerProxy` or `proxySettings.tag` names, and on down. Stops at a
+     * name the document does not define and at a loop, either of which the core would refuse.
+     */
+    private fun chainOf(outbound: JsonObject, byTag: Map<String, JsonObject>): List<JsonObject> {
+        val chain = mutableListOf<JsonObject>()
+        val seen = mutableSetOf(outbound.str("tag").orEmpty())
+        var current = outbound
+        repeat(MAX_CHAIN) {
+            val next = nextHop(current) ?: return chain
+            if (!seen.add(next)) return chain
+            val hop = byTag[next] ?: return chain
+            chain += hop
+            current = hop
+        }
+        return chain
+    }
+
+    private fun nextHop(outbound: JsonObject): String? =
+        ((outbound["streamSettings"] as? JsonObject)?.get("sockopt") as? JsonObject)
+            ?.str("dialerProxy")?.takeIf(String::isNotBlank)
+            ?: (outbound["proxySettings"] as? JsonObject)?.str("tag")?.takeIf(String::isNotBlank)
+
+    private const val MAX_CHAIN = 4
+
+    /** See [OperatorConfig.roles]. */
+    private fun rolesOf(document: JsonObject): Map<String, String> = buildMap {
+        (document["inbounds"] as? JsonArray)?.forEach { inbound ->
+            (inbound as? JsonObject)?.str("tag")?.takeIf(String::isNotBlank)?.let { put(it, "inbound") }
+        }
+        (document["outbounds"] as? JsonArray)?.forEach { element ->
+            val outbound = element as? JsonObject ?: return@forEach
+            val tag = outbound.str("tag")?.takeIf(String::isNotBlank) ?: return@forEach
+            when (outbound.str("protocol", "type")?.lowercase()) {
+                "freedom", "direct" -> put(tag, "direct")
+                "blackhole", "block" -> put(tag, "block")
+                "dns" -> put(tag, "dns")
+                in PROXY_PROTOCOLS -> put(tag, "proxy")
+            }
+        }
+        ((document["routing"] as? JsonObject)?.get("balancers") as? JsonArray)?.forEach { balancer ->
+            (balancer as? JsonObject)?.str("tag")?.takeIf(String::isNotBlank)?.let { put(it, "proxy") }
+        }
+    }
+
+    private val PROXY_PROTOCOLS = setOf(
+        "vless", "vmess", "trojan", "shadowsocks", "socks", "http", "hysteria", "hysteria2", "wireguard", "tuic",
+    )
 
     // -------------------------------------------------------------- SIP008
 

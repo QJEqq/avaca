@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Logo variant 3, set into the adaptive icon's canvas so that its own frame edge falls outside
+     the launcher's mask and the mask draws the outline instead. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:drawable="@drawable/avaca_icon_3"
+    android:inset="12.5%" />

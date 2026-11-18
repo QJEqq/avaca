@@ -29,14 +29,14 @@ class DiagnosticLogTest {
 
     @Test
     fun `a line written comes back out`() {
-        journal().write('I', "Yumi", "tunnel up")
+        journal().write('I', "Avaca", "tunnel up")
 
-        assertTrue(File(folder.root, "test.log").readText().contains("I/Yumi tunnel up"))
+        assertTrue(File(folder.root, "test.log").readText().contains("I/Avaca tunnel up"))
     }
 
     @Test
     fun `a disabled journal writes nothing at all`() {
-        DiagnosticLog(folder.root, enabled = false, name = "test.log").write('I', "Yumi", "x")
+        DiagnosticLog(folder.root, enabled = false, name = "test.log").write('I', "Avaca", "x")
 
         assertFalse(File(folder.root, "test.log").exists())
     }
@@ -48,7 +48,7 @@ class DiagnosticLogTest {
     @Test
     fun `the journal stays within two halves of its cap`() {
         val log = journal(maxBytes = 100L)
-        repeat(500) { log.write('I', "Yumi", "line $it, long enough to push the file over its cap") }
+        repeat(500) { log.write('I', "Avaca", "line $it, long enough to push the file over its cap") }
 
         val halves = folder.root.listFiles().orEmpty().filter { it.name.startsWith("test.log") }
         assertEquals(listOf("test.log", "test.log.1"), halves.map { it.name }.sorted())
@@ -60,7 +60,7 @@ class DiagnosticLogTest {
     @Test
     fun `clear empties the rotated half as well as the live one`() {
         val log = journal(maxBytes = 100L)
-        repeat(50) { log.write('I', "Yumi", "line $it, long enough to push the file over its cap") }
+        repeat(50) { log.write('I', "Avaca", "line $it, long enough to push the file over its cap") }
         assertTrue(File(folder.root, "test.log.1").isFile)
 
         log.clear()
@@ -73,8 +73,8 @@ class DiagnosticLogTest {
     @Test
     fun `read returns the rotated half before the live one`() {
         val log = journal(maxBytes = 60L)
-        log.write('I', "Yumi", "the older line, long enough on its own to fill the whole cap")
-        log.write('I', "Yumi", "the newer line")
+        log.write('I', "Avaca", "the older line, long enough on its own to fill the whole cap")
+        log.write('I', "Avaca", "the newer line")
 
         val text = log.read()
         assertTrue(text.indexOf("older") < text.indexOf("newer"))
