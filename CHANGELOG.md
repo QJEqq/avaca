@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.1 — 2026-11-18
+
+- Полные исходники в теге: в 1.0.0 правило `logs/` из `.gitignore` Yumi не пустило в репозиторий
+  `LogsScreen.kt`, и код по тегу `v1.0.0` не собирался. Правило теперь `/logs/`.
+- README: скриншоты обоих дизайнов. PRIVACY.md: в User-Agent есть модель устройства.
+- Код приложения тот же, что в 1.0.0; ставится поверх него.
+
+Complete sources in the tag: in 1.0.0 the `logs/` rule from Yumi's `.gitignore` kept `LogsScreen.kt`
+out of the repository, so the `v1.0.0` tag did not build. The app code is the same as 1.0.0 and
+installs over it.
+
 ## 1.0.0 — 2026-11-18
 
 Первый релиз Avaca. Приложение начиналось как форк [Yumi](https://github.com/GXUser7/yumi) и
